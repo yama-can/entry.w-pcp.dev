@@ -1,24 +1,28 @@
 {
   "name": "entry.w-pcp.dev",
-  "version": "0.1.0",
-  "private": true,
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint"
+    "dev:backend": "node --experimental-strip-types backend/src/index.ts",
+    "dev:frontend": "cd frontend && ./node_modules/.bin/next dev -p 3000 -H 0.0.0.0",
+    "build:backend": "pnpm --filter backend build",
+    "build:frontend": "pnpm --filter frontend build",
+    "build": "pnpm --filter backend build && pnpm --filter frontend build",
+    "start:frontend": "cd frontend && ./node_modules/.bin/next start -p 3000 -H 0.0.0.0",
+    "test": "pnpm --filter backend test",
+    "test:all": "pnpm --filter backend test:all"
   },
-  "dependencies": {
-    "next": "16.3.6",
-    "react": "19.2.8",
-    "react-dom": "19.2.8"
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "12.5.1",
+      "onFail": "ignore"
+    }
   },
-  "devDependencies": {
-    "@types/node": "^20",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "eslint": "^9",
-    "eslint-config-next": "16.3.6",
-    "typescript": "^5"
-  }
+  "packageManager": "pnpm@12.5.1",
+  "type": "module"
 }

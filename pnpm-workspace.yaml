@@ -1,0 +1,6 @@
+packages:
+  - "frontend"
+  - "backend"
+allowBuilds:
+  better-sqlite3: true
+  unrs-resolver: true
