@@ -1,4 +1,5 @@
 import express, { type Request, type Response } from 'express';
+import { requireBasicAuth } from './basicAuth.ts';
 import { registerSSEClient } from './sse.ts';
 import { adminRouter } from './routes/admin.ts';
 import { daysRouter } from './routes/days.ts';
@@ -8,6 +9,9 @@ import { ticketsRouter } from './routes/tickets.ts';
 import { assignmentRouter } from './routes/assignment.ts';
 
 export const app = express();
+
+// 外部公開入口のBasic認証。BASIC_AUTH_USERNAME/PASSWORD設定時のみ有効。
+app.use(requireBasicAuth);
 
 // CORS ミドルウェア
 app.use((_req, res, next) => {
@@ -49,4 +53,3 @@ app.get('/api/events', (_req: Request, res: Response) => {
     unregister();
   });
 });
-

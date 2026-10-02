@@ -16,6 +16,17 @@ bun dev
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
 
+## Basic認証
+
+外部公開時は、フロントエンドとバックエンドの両方に同じ認証情報を設定してください。
+
+```bash
+export BASIC_AUTH_USERNAME=operator
+export BASIC_AUTH_PASSWORD='change-this-password'
+```
+
+設定後にフロントエンドとバックエンドを再起動すると、Basic認証が有効になります。どちらかの環境変数が未設定の場合は、開発・テスト用に認証を無効化します。
+
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 
 This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.

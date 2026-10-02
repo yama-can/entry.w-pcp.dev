@@ -5,6 +5,9 @@
 export const getApiBase = (): string => {
   if (typeof window !== "undefined") {
     const hostname = window.location.hostname || "localhost";
+    if (hostname === "entry.w-pcp.dev") {
+      return "";
+    }
     return `http://${hostname}:4000`;
   }
   return "http://localhost:4000";
@@ -85,4 +88,3 @@ export const getLaneTheme = (lane: string): LaneTheme => {
       };
   }
 };
-
