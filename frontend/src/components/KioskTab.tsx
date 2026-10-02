@@ -1,4 +1,5 @@
 import React from "react";
+import { getTicketDisplayCode } from "../utils/ticketCode";
 import { Game, IssuedTicket, WaitStatus } from "../types";
 import {
   AlertCircleIcon,
@@ -17,6 +18,8 @@ interface KioskTabProps {
   games: Game[];
   handleIssueTicket: (gameId: string) => void;
   lastIssued: IssuedTicket | null;
+  pendingCheckinTicket: IssuedTicket | null;
+  handleImmediateCheckin: () => void;
 }
 
 export const KioskTab: React.FC<KioskTabProps> = ({
@@ -29,6 +32,8 @@ export const KioskTab: React.FC<KioskTabProps> = ({
   games,
   handleIssueTicket,
   lastIssued,
+  pendingCheckinTicket,
+  handleImmediateCheckin,
 }) => {
   return (
     <div className="kiosk-grid">
@@ -87,6 +92,25 @@ export const KioskTab: React.FC<KioskTabProps> = ({
           </div>
         )}
 
+        {waitStatus && !waitStatus.canIssue && waitStatus.reason === "PAUSED" && (
+          <div
+            className="card"
+            style={{
+              borderLeft: "4px solid var(--danger)",
+              background: "rgba(239, 68, 68, 0.08)",
+              padding: "12px 16px",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "0.95rem", fontWeight: "700", color: "#fca5a5" }}>
+              <AlertCircleIcon size={18} color="#ef4444" />
+              <span>発券を一時停止しています</span>
+            </div>
+            <div style={{ marginTop: "4px", fontSize: "0.85rem", color: "var(--text-secondary)" }}>
+              受付再開までお待ちください。
+            </div>
+          </div>
+        )}
+
         {/* スキャン入力カード */}
         <div className="card" style={{ padding: "14px 16px" }}>
           <div
@@ -134,6 +158,8 @@ export const KioskTab: React.FC<KioskTabProps> = ({
                     ? `発券一時停止中 (再開目安: ${waitStatus.resumeTime}頃)`
                     : waitStatus.reason === "FULL"
                     ? "全枠満席のため発券停止中"
+                    : waitStatus.reason === "PAUSED"
+                    ? "管理者による発券一時停止中"
                     : "スロット未生成のため発券不可"
                   : "バーコード入力待機中 (Enter)"
               }
@@ -223,7 +249,7 @@ export const KioskTab: React.FC<KioskTabProps> = ({
                   lineHeight: 1,
                 }}
               >
-                No. {lastIssued.ticket_number}
+                {lastIssued.display_ticket_code || getTicketDisplayCode(lastIssued.ticket_number, lastIssued.priority_level)}
               </div>
             </div>
 
@@ -242,21 +268,58 @@ export const KioskTab: React.FC<KioskTabProps> = ({
                 Day {activeDay} / 案内待機人数: {lastIssued.waiting_count || 1}名
               </div>
 
+              {pendingCheckinTicket?.id === lastIssued.id && (
+                <div
+                  style={{
+                    marginTop: "12px",
+                    padding: "14px",
+                    borderRadius: "var(--radius-md)",
+                    border: "2px solid #fbbf24",
+                    background: "rgba(245, 158, 11, 0.12)",
+                  }}
+                >
+                  <div style={{ fontWeight: 800, color: "#fde68a", marginBottom: "6px" }}>
+                    集合時間を確認してください
+                  </div>
+                  <button
+                    type="button"
+                    className="btn-primary"
+                    onClick={handleImmediateCheckin}
+                    style={{ width: "100%", padding: "12px", fontWeight: 800 }}
+                  >
+                    今すぐチェックイン
+                  </button>
+                </div>
+              )}
+
               {lastIssued.expected_slot_time && (
                 <div
                   style={{
                     marginTop: "10px",
-                    background: "rgba(59, 130, 246, 0.08)",
-                    border: "1px solid rgba(59, 130, 246, 0.3)",
+                    background: "rgba(14, 165, 233, 0.16)",
+                    border: "2px solid #38bdf8",
                     borderRadius: "var(--radius-sm)",
-                    padding: "8px 12px",
+                    padding: "14px 16px",
+                    boxShadow: "0 0 0 3px rgba(56, 189, 248, 0.12)",
                   }}
                 >
-                  <div className="tabular" style={{ fontSize: "0.95rem", fontWeight: "700", color: "#60a5fa" }}>
-                    予定枠: {lastIssued.expected_slot_time} {lastIssued.expected_lane ? `(${lastIssued.expected_lane}組)` : ""}
+                  <div style={{ fontSize: "0.8rem", fontWeight: "800", color: "#bae6fd", letterSpacing: "0.08em" }}>
+                    次に来る時間（大切）
                   </div>
+                  <div className="tabular" style={{ fontSize: "1.55rem", fontWeight: "900", color: "#f0f9ff", marginTop: "3px" }}>
+                    集合時間：{lastIssued.meeting_time || "計算中"}
+                  </div>
+                  <div className="tabular" style={{ fontSize: "1rem", fontWeight: "700", color: "#7dd3fc", marginTop: "3px" }}>
+                    体験開始予定：{lastIssued.expected_slot_time} {lastIssued.expected_lane ? `(${lastIssued.expected_lane}組)` : ""}
+                  </div>
+                  {lastIssued.original_expected_slot_time &&
+                    lastIssued.original_expected_slot_time !== lastIssued.expected_slot_time && (
+                      <div style={{ fontSize: "0.75rem", color: "#fbbf24", marginTop: "2px" }}>
+                        本来の定刻: {lastIssued.original_expected_slot_time}
+                      </div>
+                    )}
                   <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: "2px" }}>
-                    集合時間目安: 枠の5分前
+                    集合時間は体験開始の7分前です。時間までに集合場所へお越しください。
                   </div>
                 </div>
               )}

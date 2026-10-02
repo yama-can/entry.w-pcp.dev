@@ -2,8 +2,60 @@ import { Router, type Request, type Response } from 'express';
 import { requireAdminAuth } from '../auth.ts';
 import { db, getActiveDay } from '../db.ts';
 import { broadcastUpdate } from '../sse.ts';
+import { isLateTicket } from '../services/waitStatus.ts';
 
 export const slotsRouter = Router();
+
+function recomputeLatestTicketTimes(dayId: number) {
+  // 調整枠も最新の定刻の詰め込み対象に含める。
+  const seats = db.prepare(`
+    SELECT r.slot_id, s.slot_time, s.order_idx, r.seat_no
+    FROM seat_reservations r
+    JOIN slots s ON s.id = r.slot_id
+    WHERE s.day_id = ? AND s.is_closed = 0
+      AND s.is_maintenance = 0 AND r.is_maintenance = 0
+    ORDER BY s.order_idx ASC, r.seat_no ASC
+  `).all(dayId) as any[];
+  const tickets = db.prepare(`
+    SELECT id, status, expected_slot_id, expected_slot_time
+    FROM tickets
+    WHERE day_id = ? AND status IN ('issued', 'checked_in')
+      AND assigned_slot_id IS NULL
+    ORDER BY priority_level DESC, ticket_number ASC
+  `).all(dayId) as any[];
+  const ticketsToRecompute = tickets.filter((ticket) => {
+    if (ticket.status !== 'checked_in' || !ticket.expected_slot_time) return true;
+    return !isLateTicket(ticket);
+  });
+  const update = db.prepare('UPDATE tickets SET expected_slot_id = ?, expected_slot_time = ? WHERE id = ?');
+  for (let i = 0; i < ticketsToRecompute.length; i++) {
+    const seat = seats[i] || null;
+    update.run(seat?.slot_id ?? null, seat?.slot_time ?? null, ticketsToRecompute[i].id);
+  }
+}
+
+function parseLaneSeatCounts(input: unknown, lanes: string[]): number[] | null {
+  if (!input) return null;
+  const counts = new Map<string, number>();
+  if (typeof input === 'string') {
+    for (const part of input.split(',')) {
+      const [rawLane, rawCount] = part.split(':').map((value) => value.trim());
+      const count = Number(rawCount);
+      if (rawLane && Number.isFinite(count) && count >= 0) {
+        counts.set(rawLane.toUpperCase(), Math.floor(count));
+      }
+    }
+  } else if (typeof input === 'object' && input !== null) {
+    for (const [rawLane, rawCount] of Object.entries(input)) {
+      const count = Number(rawCount);
+      if (Number.isFinite(count) && count >= 0) {
+        counts.set(rawLane.toUpperCase(), Math.floor(count));
+      }
+    }
+  }
+  if (!lanes.some((lane) => counts.has(lane))) return null;
+  return lanes.map((lane) => counts.get(lane) ?? 0);
+}
 
 // ==========================================
 // スロット一括初期化生成（開始・終了時刻または枠数指定）
@@ -12,16 +64,17 @@ slotsRouter.post('/api/slots/generate', requireAdminAuth, (req: Request, res: Re
   try {
     const {
       day = null,
-      startHour = 10,
+      startHour = 9,
       startMinute = 0,
       endHour = null,
       endMinute = null,
       count = null,
-      seatsPerSlot = 6,
+      seatsPerSlot = 4,
       bufferInterval = 0,
       bufferDuration = 3,
       // 任意レーン & 拘束/入替パラメータ
       lanes: inputLanes = null,
+      laneSeatCounts: inputLaneSeatCounts = 'A:4, B:5',
       playDuration = 5,
       cleanupDuration = 2,
       laneOffset = null,
@@ -44,6 +97,7 @@ slotsRouter.post('/api/slots/generate', requireAdminAuth, (req: Request, res: Re
       lanes = inputLanes.split(',').map(l => l.trim().toUpperCase()).filter(Boolean);
     }
     if (lanes.length === 0) lanes = ['A', 'B'];
+    const laneSeatCounts = parseLaneSeatCounts(inputLaneSeatCounts, lanes);
 
     const playDur = parseInt(String(playDuration), 10) || 5;
     const cleanDur = parseInt(String(cleanupDuration), 10) || 2;
@@ -108,11 +162,10 @@ slotsRouter.post('/api/slots/generate', requireAdminAuth, (req: Request, res: Re
 
       let curMins = startTotal;
       const L = lanes.length;
-
       for (let i = 0; i < slotCount; i++) {
         const orderIdx = i;
-        const lIdx = i % L;
-        const lane = lanes[lIdx];
+        const lane = lanes[i % L] ?? 'A';
+        const lIdx = lanes.indexOf(lane);
 
         const hours = Math.floor(curMins / 60) % 24;
         const mins = curMins % 60;
@@ -133,7 +186,8 @@ slotsRouter.post('/api/slots/generate', requireAdminAuth, (req: Request, res: Re
         const result = insertSlot.run(dayId, orderIdx, slotTime, lane, dur, playDur, cleanDur, isBuffer);
         const slotId = result.lastInsertRowid;
 
-        for (let seat = 1; seat <= seats; seat++) {
+        const laneSeatCount = laneSeatCounts?.[lIdx] ?? seats;
+        for (let seat = 1; seat <= laneSeatCount; seat++) {
           const ticketCode = dayId > 1 ? `D${dayId}-${lane}${hh}${mm}-${seat}` : `${lane}${hh}${mm}-${seat}`;
           insertReservation.run(slotId, seat, ticketCode);
         }
@@ -153,7 +207,7 @@ slotsRouter.post('/api/slots/generate', requireAdminAuth, (req: Request, res: Re
 // ==========================================
 // スロット再調整・追加生成 (Adjust)
 // ==========================================
-slotsRouter.post('/api/slots/adjust', requireAdminAuth, (req: Request, res: Response) => {
+slotsRouter.post(['/api/slots/adjust', '/api/slots/adjust-from'], requireAdminAuth, (req: Request, res: Response) => {
   try {
     const {
       day = null,
@@ -164,10 +218,11 @@ slotsRouter.post('/api/slots/adjust', requireAdminAuth, (req: Request, res: Resp
       endHour = null,
       endMinute = null,
       count = null,
-      seatsPerSlot = 6,
+      seatsPerSlot = 4,
       bufferInterval = 0,
       bufferDuration = 3,
       lanes: inputLanes = null,
+      laneSeatCounts: inputLaneSeatCounts = 'A:4, B:5',
       playDuration = 5,
       cleanupDuration = 2,
       laneOffset = null,
@@ -188,6 +243,7 @@ slotsRouter.post('/api/slots/adjust', requireAdminAuth, (req: Request, res: Resp
       lanes = inputLanes.split(',').map(l => l.trim().toUpperCase()).filter(Boolean);
     }
     if (lanes.length === 0) lanes = ['A', 'B'];
+    const laneSeatCounts = parseLaneSeatCounts(inputLaneSeatCounts, lanes);
 
     const playDur = parseInt(String(playDuration), 10) || 5;
     const cleanDur = parseInt(String(cleanupDuration), 10) || 2;
@@ -282,11 +338,10 @@ slotsRouter.post('/api/slots/adjust', requireAdminAuth, (req: Request, res: Resp
 
       let curMins = currentTotalMinutes;
       const L = lanes.length;
-
       for (let i = 0; i < slotCount; i++) {
         const orderIdx = baseOrderIdx + i;
-        const lIdx = (lastLaneIdx + 1 + i) % L;
-        const lane = lanes[lIdx];
+        const lane = lanes[(lastLaneIdx + 1 + i) % L] ?? 'A';
+        const lIdx = lanes.indexOf(lane);
 
         const hours = Math.floor(curMins / 60) % 24;
         const mins = curMins % 60;
@@ -307,7 +362,8 @@ slotsRouter.post('/api/slots/adjust', requireAdminAuth, (req: Request, res: Resp
         const result = insertSlot.run(dayId, orderIdx, slotTime, lane, dur, playDur, cleanDur, isBuffer);
         const slotId = result.lastInsertRowid;
 
-        for (let seat = 1; seat <= seats; seat++) {
+        const laneSeatCount = laneSeatCounts?.[lIdx] ?? seats;
+        for (let seat = 1; seat <= laneSeatCount; seat++) {
           const ticketCode = dayId > 1 ? `D${dayId}-${lane}${hh}${mm}-${seat}` : `${lane}${hh}${mm}-${seat}`;
           insertReservation.run(slotId, seat, ticketCode);
         }
@@ -437,6 +493,11 @@ slotsRouter.post('/api/slots/shift-delay', requireAdminAuth, (req: Request, res:
       const targetSlots = db.prepare('SELECT * FROM slots WHERE day_id = ? AND order_idx >= ? ORDER BY order_idx ASC').all(baseSlot.day_id, baseSlot.order_idx) as any[];
 
       const updateSlot = db.prepare('UPDATE slots SET slot_time = ? WHERE id = ?');
+      const updateExpectedTime = db.prepare(`
+        UPDATE tickets
+        SET expected_slot_time = ?
+        WHERE expected_slot_id = ? AND status != 'cancelled'
+      `);
       const updateTicket = db.prepare('UPDATE seat_reservations SET ticket_code = ? WHERE id = ?');
 
       for (const slot of targetSlots) {
@@ -449,6 +510,7 @@ slotsRouter.post('/api/slots/shift-delay', requireAdminAuth, (req: Request, res:
         const newSlotTime = `${newHh}:${newMm}`;
 
         updateSlot.run(newSlotTime, slot.id);
+        updateExpectedTime.run(newSlotTime, slot.id);
 
         const seats = db.prepare('SELECT id, seat_no FROM seat_reservations WHERE slot_id = ?').all(slot.id) as any[];
         for (const seat of seats) {
@@ -459,6 +521,7 @@ slotsRouter.post('/api/slots/shift-delay', requireAdminAuth, (req: Request, res:
     });
 
     shiftTransaction();
+    recomputeLatestTicketTimes((db.prepare('SELECT day_id FROM slots WHERE id = ?').get(fromSlotId) as any).day_id);
     broadcastUpdate({ reason: 'slots_shifted' });
     res.json({ success: true, message: `指定スロット以降を ${shift > 0 ? `+${shift}` : shift} 分シフトしました` });
   } catch (error: any) {
@@ -487,6 +550,7 @@ slotsRouter.post('/api/slots/toggle-buffer', requireAdminAuth, (req: Request, re
     // 調整枠化する場合、メンテナンス枠指定は解除
     const nextMaintenance = nextBuffer === 1 ? 0 : current.is_maintenance;
     db.prepare('UPDATE slots SET is_buffer = ?, is_maintenance = ? WHERE id = ?').run(nextBuffer, nextMaintenance, slotId);
+    recomputeLatestTicketTimes((db.prepare('SELECT day_id FROM slots WHERE id = ?').get(slotId) as any).day_id);
 
     broadcastUpdate({ reason: 'slot_buffer_toggled', slotId, is_buffer: nextBuffer === 1, is_maintenance: nextMaintenance === 1 });
     res.json({ success: true, is_buffer: nextBuffer === 1, is_maintenance: nextMaintenance === 1 });
@@ -516,9 +580,47 @@ slotsRouter.post('/api/slots/toggle-maintenance', requireAdminAuth, (req: Reques
     // メンテナンス枠化する場合、調整枠フラグはクリア
     const nextBuffer = nextMaint === 1 ? 0 : current.is_buffer;
     db.prepare('UPDATE slots SET is_maintenance = ?, is_buffer = ? WHERE id = ?').run(nextMaint, nextBuffer, slotId);
+    recomputeLatestTicketTimes((db.prepare('SELECT day_id FROM slots WHERE id = ?').get(slotId) as any).day_id);
 
     broadcastUpdate({ reason: 'slot_maintenance_toggled', slotId, is_maintenance: nextMaint === 1, is_buffer: nextBuffer === 1 });
     res.json({ success: true, is_maintenance: nextMaint === 1, is_buffer: nextBuffer === 1 });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+slotsRouter.post('/api/slots/toggle-seat-maintenance', requireAdminAuth, (req: Request, res: Response) => {
+  try {
+    const { reservationId } = req.body;
+    if (!reservationId) {
+      res.status(400).json({ success: false, message: 'reservationId is required' });
+      return;
+    }
+    const current = db.prepare(`
+      SELECT r.*, s.day_id, s.is_maintenance AS slot_is_maintenance
+      FROM seat_reservations r
+      JOIN slots s ON s.id = r.slot_id
+      WHERE r.id = ?
+    `).get(reservationId) as any;
+    if (!current) {
+      res.status(404).json({ success: false, message: '座席が見つかりません' });
+      return;
+    }
+    if (current.status !== 'empty' && current.is_maintenance !== 1) {
+      res.status(409).json({ success: false, message: '予約・割当済みの座席は先に解除してください' });
+      return;
+    }
+    const nextMaintenance = current.is_maintenance === 1 ? 0 : 1;
+    db.prepare('UPDATE seat_reservations SET is_maintenance = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
+      .run(nextMaintenance, reservationId);
+    recomputeLatestTicketTimes(current.day_id);
+    broadcastUpdate({
+      reason: 'seat_maintenance_toggled',
+      reservationId,
+      dayId: current.day_id,
+      is_maintenance: nextMaintenance === 1,
+    });
+    res.json({ success: true, reservationId, is_maintenance: nextMaintenance === 1 });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -543,24 +645,26 @@ slotsRouter.get('/api/timeline', (req: Request, res: Response) => {
         s.play_duration,
         s.cleanup_duration,
         s.is_buffer,
-        s.is_maintenance,
+        s.is_maintenance AS slot_is_maintenance,
         s.is_closed,
         r.id AS reservation_id,
         r.seat_no,
         r.ticket_code,
         r.ticket_number,
-        r.display_ticket_code,
+        t.display_number,
+        r.priority_level,
+        r.is_maintenance AS seat_is_maintenance,
         r.note,
         r.status,
         r.is_assigned,
         r.assigned_ticket_code,
-        r.assigned_at,
         g.id AS game_id,
         g.name AS game_name,
         g.command AS game_command
       FROM slots s
       LEFT JOIN seat_reservations r ON s.id = r.slot_id
       LEFT JOIN games g ON r.game_id = g.id
+      LEFT JOIN tickets t ON t.day_id = s.day_id AND t.ticket_number = r.ticket_number
       WHERE s.day_id = ?
       ORDER BY s.order_idx ASC, r.seat_no ASC
     `).all(dayId) as any[];
@@ -579,7 +683,7 @@ slotsRouter.get('/api/timeline', (req: Request, res: Response) => {
           play_duration: row.play_duration || 5,
           cleanup_duration: row.cleanup_duration !== undefined ? row.cleanup_duration : 2,
           is_buffer: row.is_buffer === 1,
-          is_maintenance: row.is_maintenance === 1,
+          is_maintenance: row.slot_is_maintenance === 1,
           is_closed: row.is_closed === 1,
           seats: [],
         });
@@ -592,12 +696,15 @@ slotsRouter.get('/api/timeline', (req: Request, res: Response) => {
           seat_no: row.seat_no,
           ticket_code: row.ticket_code,
           ticket_number: row.ticket_number,
-          display_ticket_code: row.display_ticket_code,
+          display_number: row.display_number,
+          is_maintenance: row.seat_is_maintenance === 1,
+          display_ticket_code: row.ticket_number
+            ? (row.priority_level === 2 ? `I${String(row.display_number ?? row.ticket_number).padStart(3, '0')}` : row.priority_level === 1 ? `P${String(row.display_number ?? row.ticket_number).padStart(3, '0')}` : `No. ${String(row.display_number ?? row.ticket_number).padStart(3, '0')}`)
+            : (row.assigned_ticket_code || row.ticket_code),
           note: row.note,
           status: row.status,
           is_assigned: row.is_assigned === 1,
           assigned_ticket_code: row.assigned_ticket_code,
-          assigned_at: row.assigned_at,
           game_id: row.game_id,
           game_name: row.game_name,
           game_command: row.game_command,
@@ -605,7 +712,7 @@ slotsRouter.get('/api/timeline', (req: Request, res: Response) => {
       }
     }
 
-    const timeline = Array.from(slotsMap.values());
+    const timeline = Array.from(slotsMap.values()).sort((a, b) => a.order_idx - b.order_idx);
     res.json({ success: true, dayId, timeline });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });

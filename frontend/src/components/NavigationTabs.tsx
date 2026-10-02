@@ -1,34 +1,18 @@
 import React from "react";
-import {
-  GamepadIcon,
-  TicketIcon,
-  CheckCircleIcon,
-  ClockIcon,
-  MonitorIcon,
-  SettingsIcon,
-} from "./Icons";
+import { GamepadIcon } from "./Icons";
 
-export type TabType = "kiosk" | "checkin" | "assignment" | "inroom" | "scheduler" | "admin";
+export type TabType = "kiosk" | "checkin" | "assignment" | "inroom" | "monitor" | "scheduler" | "admin";
 
 interface NavigationTabsProps {
-  activeTab: TabType;
-  setActiveTab: (tab: TabType) => void;
   activeDay: number;
   handleSwitchDay: (day: number) => void;
   sseConnected: boolean;
-  countTicketsUnarrived: number;
-  unassignedCheckedInCount: number;
-  lateQueueCount?: number;
 }
 
 export const NavigationTabs: React.FC<NavigationTabsProps> = ({
-  activeTab,
-  setActiveTab,
   activeDay,
   handleSwitchDay,
   sseConnected,
-  countTicketsUnarrived,
-  unassignedCheckedInCount,
 }) => {
   return (
     <header className="app-header">
@@ -72,74 +56,6 @@ export const NavigationTabs: React.FC<NavigationTabsProps> = ({
           </div>
         </div>
 
-        {/* 下段（横スクロール対応チップ型ナビゲーション） */}
-        <div className="nav-tabs-container">
-          <nav className="nav-tabs" role="tablist">
-            <button
-              type="button"
-              className={`nav-tab-btn ${activeTab === "kiosk" ? "active" : ""}`}
-              onClick={() => setActiveTab("kiosk")}
-            >
-              <TicketIcon size={15} />
-              <span>発券</span>
-            </button>
-
-            <button
-              type="button"
-              className={`nav-tab-btn ${activeTab === "checkin" ? "active" : ""}`}
-              onClick={() => setActiveTab("checkin")}
-            >
-              <CheckCircleIcon size={15} />
-              <span>受付</span>
-              {countTicketsUnarrived > 0 && (
-                <span className="nav-badge nav-badge-danger">
-                  {countTicketsUnarrived}
-                </span>
-              )}
-            </button>
-
-            <button
-              type="button"
-              className={`nav-tab-btn ${activeTab === "assignment" ? "active" : ""}`}
-              onClick={() => setActiveTab("assignment")}
-            >
-              <ClockIcon size={15} />
-              <span>割当</span>
-              {unassignedCheckedInCount > 0 && (
-                <span className="nav-badge nav-badge-warning">
-                  {unassignedCheckedInCount}
-                </span>
-              )}
-            </button>
-
-            <button
-              type="button"
-              className={`nav-tab-btn ${activeTab === "inroom" ? "active" : ""}`}
-              onClick={() => setActiveTab("inroom")}
-            >
-              <MonitorIcon size={15} />
-              <span>モニター</span>
-            </button>
-
-            <button
-              type="button"
-              className={`nav-tab-btn ${activeTab === "scheduler" ? "active" : ""}`}
-              onClick={() => setActiveTab("scheduler")}
-            >
-              <ClockIcon size={15} />
-              <span>進行</span>
-            </button>
-
-            <button
-              type="button"
-              className={`nav-tab-btn ${activeTab === "admin" ? "active" : ""}`}
-              onClick={() => setActiveTab("admin")}
-            >
-              <SettingsIcon size={15} />
-              <span>設定</span>
-            </button>
-          </nav>
-        </div>
       </div>
     </header>
   );
