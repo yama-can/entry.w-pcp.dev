@@ -74,6 +74,8 @@ export interface TicketItem {
   id: number;
   day_id: number;
   ticket_number: number;
+  display_number?: number;
+  display_ticket_code?: string;
   game_id: string;
   game_name: string;
   game_command?: string;
