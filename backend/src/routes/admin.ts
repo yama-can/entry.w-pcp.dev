@@ -8,6 +8,7 @@ import {
   getAdminTokenFromRequest,
 } from '../auth.ts';
 import {
+  db,
   getActiveDay,
   getIssuingPaused,
   getMaxWaitMinutes,
@@ -131,6 +132,84 @@ adminRouter.post('/api/settings/meeting-lead', requireAdminAuth, (req: Request, 
     setMeetingLeadMinutes(mins);
     broadcastUpdate({ reason: 'settings_updated', meetingLeadMinutes: mins });
     res.json({ success: true, meetingLeadMinutes: mins, message: `集合時間を体験枠の ${mins}分前 に設定しました` });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ==========================================
+// 整理券フルリセット API (管理者専用)
+// ==========================================
+adminRouter.post('/api/admin/reset-tickets', requireAdminAuth, (req: Request, res: Response) => {
+  try {
+    const activeDay = getActiveDay();
+    const day = req.body.day ? parseInt(String(req.body.day), 10) : activeDay;
+    const isAllDays = req.body.allDays === true;
+
+    db.transaction(() => {
+      if (isAllDays) {
+        db.prepare('DELETE FROM tickets').run();
+        db.prepare('DELETE FROM late_queue').run();
+        db.prepare(`
+          UPDATE seat_reservations 
+          SET status = 'empty',
+              is_assigned = 0,
+              ticket_number = NULL,
+              assigned_ticket_code = NULL,
+              game_id = NULL,
+              note = NULL,
+              priority_level = 0,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE is_maintenance = 0
+        `).run();
+        db.prepare(`
+          UPDATE seat_reservations 
+          SET ticket_number = NULL,
+              assigned_ticket_code = NULL,
+              game_id = NULL,
+              note = NULL,
+              priority_level = 0,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE is_maintenance = 1
+        `).run();
+      } else {
+        db.prepare('DELETE FROM tickets WHERE day_id = ?').run(day);
+        db.prepare('DELETE FROM late_queue WHERE day_id = ?').run(day);
+        db.prepare(`
+          UPDATE seat_reservations 
+          SET status = 'empty',
+              is_assigned = 0,
+              ticket_number = NULL,
+              assigned_ticket_code = NULL,
+              game_id = NULL,
+              note = NULL,
+              priority_level = 0,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE slot_id IN (SELECT id FROM slots WHERE day_id = ?)
+            AND is_maintenance = 0
+        `).run(day);
+        db.prepare(`
+          UPDATE seat_reservations 
+          SET ticket_number = NULL,
+              assigned_ticket_code = NULL,
+              game_id = NULL,
+              note = NULL,
+              priority_level = 0,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE slot_id IN (SELECT id FROM slots WHERE day_id = ?)
+            AND is_maintenance = 1
+        `).run(day);
+      }
+    })();
+
+    broadcastUpdate({ reason: 'tickets_reset', dayId: isAllDays ? activeDay : day });
+
+    res.json({
+      success: true,
+      message: isAllDays
+        ? '全日程の整理券・配席データをフルリセットしました'
+        : `Day ${day} の整理券・配席データをフルリセットしました`,
+    });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }

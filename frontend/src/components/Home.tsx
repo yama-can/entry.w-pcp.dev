@@ -935,6 +935,32 @@ export default function Home({ activeTab }: HomeProps) {
     }
   };
 
+  // 整理券のフルリセット
+  const handleResetTickets = async (day?: number, allDays?: boolean) => {
+    const targetDayId = day || targetDay || activeDay;
+    const msg = allDays
+      ? "【警告】全日程の整理券データをすべて削除（フルリセット）しますか？\n発券済みの整理券・チェックイン情報・配席がすべてクリアされ、最初の番号から発券可能な状態に戻ります。この操作は取り消せません。"
+      : `【警告】Day ${targetDayId} の整理券データをすべて削除（フルリセット）しますか？\n発券済みの整理券・チェックイン情報・配席がすべてクリアされ、最初の番号から発券可能な状態に戻ります。この操作は取り消せません。`;
+
+    if (!confirm(msg)) return;
+
+    try {
+      const data = await adminFetch("/api/admin/reset-tickets", { day: targetDayId, allDays });
+      if (data.success) {
+        setSuccessMessage(data.message);
+        setPendingCheckinTicket(null);
+        setLastIssued(null);
+        fetchData();
+      } else {
+        setErrorMessage(data.message || "リセットに失敗しました");
+      }
+    } catch (err: any) {
+      if (err.message !== "UNAUTHORIZED") {
+        setErrorMessage("リセット通信に失敗しました");
+      }
+    }
+  };
+
   // タイムラインのレーン一覧
   const dynamicLanes = Array.from(new Set(timeline.map((s) => s.lane).filter(Boolean)));
   if (dynamicLanes.length === 0) dynamicLanes.push("A", "B");
@@ -1177,6 +1203,7 @@ export default function Home({ activeTab }: HomeProps) {
             isAdminLoggedIn={isAdminLoggedIn}
             onLogin={handleAdminLogin}
             onLogout={handleAdminLogout}
+            handleResetTickets={handleResetTickets}
           />
         )}
 

@@ -102,6 +102,7 @@ interface AdminTabProps {
   isAdminLoggedIn: boolean;
   onLogin: (password: string) => Promise<boolean>;
   onLogout: () => void;
+  handleResetTickets: (day?: number, allDays?: boolean) => void;
 }
 
 export const AdminTab: React.FC<AdminTabProps> = ({
@@ -174,6 +175,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
   isAdminLoggedIn,
   onLogin,
   onLogout,
+  handleResetTickets,
 }) => {
   const laneNames = lanesInput
     .split(",")
@@ -1252,6 +1254,53 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                 </button>
               </div>
             ))}
+          </div>
+        </div>
+
+        {/* 整理券フルリセットカード */}
+        <div className="card" style={{ border: "1px solid rgba(239, 68, 68, 0.4)", background: "rgba(239, 68, 68, 0.03)" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+            <h3 style={{ fontSize: "1.1rem", fontWeight: "bold", color: "#f87171", display: "flex", alignItems: "center", gap: "8px" }}>
+              <TrashIcon size={18} />
+              整理券データ管理 (リセット)
+            </h3>
+            <span style={{ fontSize: "0.75rem", color: "#ef4444", background: "rgba(239, 68, 68, 0.15)", padding: "2px 8px", borderRadius: "4px", fontWeight: "bold" }}>
+              危険な操作
+            </span>
+          </div>
+          <p style={{ fontSize: "0.84rem", color: "#94a3b8", marginBottom: "16px", lineHeight: "1.6" }}>
+            発券済みの整理券、チェックイン・到着情報、座席への割当（配席）をすべて消去し、枠（スロット）を空席に戻して最初の番号（001〜）から発券できる状態にします。
+          </p>
+          <div style={{ display: "flex", gap: "10px", flexWrap: "wrap", alignItems: "center" }}>
+            <button
+              type="button"
+              className="btn-danger"
+              style={{
+                background: "#dc2626",
+                color: "#ffffff",
+                padding: "8px 16px",
+                fontWeight: "bold",
+                fontSize: "0.88rem",
+              }}
+              onClick={() => handleResetTickets(targetDay, false)}
+            >
+              Day {targetDay} の整理券をフルリセット
+            </button>
+            <button
+              type="button"
+              className="btn-secondary"
+              style={{
+                background: "transparent",
+                color: "#f87171",
+                border: "1px solid rgba(239, 68, 68, 0.4)",
+                padding: "8px 14px",
+                fontSize: "0.85rem",
+              }}
+              onClick={() => handleResetTickets(undefined, true)}
+              title="全日程（Day 1 & Day 2）の整理券を一括リセット"
+            >
+              全日程の整理券をリセット
+            </button>
           </div>
         </div>
       </div>
