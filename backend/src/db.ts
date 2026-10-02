@@ -205,3 +205,14 @@ export function setMeetingLeadMinutes(minutes: number): void {
   `).run(String(minutes));
 }
 
+export function getIssuingPaused(): boolean {
+  const row = db.prepare("SELECT value FROM settings WHERE key = 'issuing_paused'").get() as { value?: string } | undefined;
+  return row?.value === '1';
+}
+
+export function setIssuingPaused(paused: boolean): void {
+  db.prepare(`
+    INSERT INTO settings (key, value) VALUES ('issuing_paused', ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(paused ? '1' : '0');
+}

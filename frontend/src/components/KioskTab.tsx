@@ -87,6 +87,25 @@ export const KioskTab: React.FC<KioskTabProps> = ({
           </div>
         )}
 
+        {waitStatus && !waitStatus.canIssue && waitStatus.reason === "PAUSED" && (
+          <div
+            className="card"
+            style={{
+              borderLeft: "4px solid var(--danger)",
+              background: "rgba(239, 68, 68, 0.08)",
+              padding: "12px 16px",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "8px", fontSize: "0.95rem", fontWeight: "700", color: "#fca5a5" }}>
+              <AlertCircleIcon size={18} color="#ef4444" />
+              <span>発券を一時停止しています</span>
+            </div>
+            <div style={{ marginTop: "4px", fontSize: "0.85rem", color: "var(--text-secondary)" }}>
+              受付再開までお待ちください。
+            </div>
+          </div>
+        )}
+
         {/* スキャン入力カード */}
         <div className="card" style={{ padding: "14px 16px" }}>
           <div
@@ -134,6 +153,8 @@ export const KioskTab: React.FC<KioskTabProps> = ({
                     ? `発券一時停止中 (再開目安: ${waitStatus.resumeTime}頃)`
                     : waitStatus.reason === "FULL"
                     ? "全枠満席のため発券停止中"
+                    : waitStatus.reason === "PAUSED"
+                    ? "管理者による発券一時停止中"
                     : "スロット未生成のため発券不可"
                   : "バーコード入力待機中 (Enter)"
               }

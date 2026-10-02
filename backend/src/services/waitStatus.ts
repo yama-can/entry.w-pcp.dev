@@ -1,8 +1,8 @@
-import { db, getMaxWaitMinutes } from '../db.ts';
+import { db, getIssuingPaused, getMaxWaitMinutes } from '../db.ts';
 
 export interface IssueWaitStatus {
   canIssue: boolean;
-  reason: 'NO_SLOTS' | 'FULL' | 'WAIT_LIMIT_EXCEEDED' | 'OK';
+  reason: 'NO_SLOTS' | 'FULL' | 'WAIT_LIMIT_EXCEEDED' | 'PAUSED' | 'OK';
   message: string;
   maxWaitMinutes: number;
   currentWaitMinutes: number;
@@ -26,6 +26,18 @@ export interface BufferSummary {
  */
 export function getIssueWaitStatus(dayId: number, simulatedTimeStr?: string | null): IssueWaitStatus {
   const maxWaitMinutes = getMaxWaitMinutes();
+
+  if (getIssuingPaused()) {
+    return {
+      canIssue: false,
+      reason: 'PAUSED',
+      message: '管理者により発券を一時停止しています',
+      maxWaitMinutes,
+      currentWaitMinutes: 0,
+      nextSlotTime: null,
+      resumeTime: null,
+    };
+  }
 
   // 1. スロット自体が存在するか確認
   const totalSlotsRow = db.prepare('SELECT COUNT(*) as cnt FROM slots WHERE day_id = ? AND is_buffer = 0 AND is_maintenance = 0').get(dayId) as any;
@@ -221,4 +233,3 @@ export function getBufferSummary(dayId: number, nowMins?: number): BufferSummary
     canAccommodate,
   };
 }
-

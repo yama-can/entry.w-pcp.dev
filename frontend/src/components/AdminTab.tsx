@@ -64,6 +64,7 @@ interface AdminTabProps {
   maxWaitLimitInput: string;
   setMaxWaitLimitInput: (v: string) => void;
   handleUpdateMaxWait: (minutes: number) => void;
+  handleSetIssuingPaused: (paused: boolean) => void;
   meetingLeadInput: string;
   setMeetingLeadInput: (v: string) => void;
   handleUpdateMeetingLead: (minutes: number) => void;
@@ -137,6 +138,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
   maxWaitLimitInput,
   setMaxWaitLimitInput,
   handleUpdateMaxWait,
+  handleSetIssuingPaused,
   meetingLeadInput,
   setMeetingLeadInput,
   handleUpdateMeetingLead,
@@ -915,6 +917,19 @@ export const AdminTab: React.FC<AdminTabProps> = ({
               onClick={() => handleUpdateMaxWait(parseInt(maxWaitLimitInput, 10) || 0)}
             >
               保存
+            </button>
+          </div>
+          <div style={{ marginTop: "14px", display: "flex", justifyContent: "space-between", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+            <span style={{ fontSize: "0.82rem", color: "var(--text-muted)" }}>
+              混雑状況に関係なく、現場判断で受付を止める場合に使用します。
+            </span>
+            <button
+              type="button"
+              className="btn-primary"
+              style={{ background: waitStatus?.reason === "PAUSED" ? "#22c55e" : "#ef4444", color: "#fff", fontWeight: "bold", padding: "8px 18px" }}
+              onClick={() => handleSetIssuingPaused(waitStatus?.reason !== "PAUSED")}
+            >
+              {waitStatus?.reason === "PAUSED" ? "発券を再開" : "発券を一時停止"}
             </button>
           </div>
         </div>

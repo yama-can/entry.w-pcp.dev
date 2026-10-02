@@ -464,6 +464,22 @@ export default function Home() {
     }
   };
 
+  const handleSetIssuingPaused = async (paused: boolean) => {
+    try {
+      const data = await adminFetch('/api/settings/issuing-pause', { paused });
+      if (data.success) {
+        setSuccessMessage(data.message);
+        fetchData();
+      } else {
+        setErrorMessage(data.message || "発券状態の更新に失敗しました");
+      }
+    } catch (err: any) {
+      if (err.message !== "UNAUTHORIZED") {
+        setErrorMessage("発券状態の更新通信に失敗しました");
+      }
+    }
+  };
+
   // 集合時間リードタイム設定の更新
   const handleUpdateMeetingLead = async (minutes: number) => {
     try {
@@ -1062,6 +1078,7 @@ export default function Home() {
             maxWaitLimitInput={maxWaitLimitInput}
             setMaxWaitLimitInput={setMaxWaitLimitInput}
             handleUpdateMaxWait={handleUpdateMaxWait}
+            handleSetIssuingPaused={handleSetIssuingPaused}
             meetingLeadInput={meetingLeadInput}
             setMeetingLeadInput={setMeetingLeadInput}
             handleUpdateMeetingLead={handleUpdateMeetingLead}

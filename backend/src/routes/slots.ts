@@ -153,7 +153,7 @@ slotsRouter.post('/api/slots/generate', requireAdminAuth, (req: Request, res: Re
 // ==========================================
 // スロット再調整・追加生成 (Adjust)
 // ==========================================
-slotsRouter.post('/api/slots/adjust', requireAdminAuth, (req: Request, res: Response) => {
+slotsRouter.post(['/api/slots/adjust', '/api/slots/adjust-from'], requireAdminAuth, (req: Request, res: Response) => {
   try {
     const {
       day = null,
@@ -437,6 +437,11 @@ slotsRouter.post('/api/slots/shift-delay', requireAdminAuth, (req: Request, res:
       const targetSlots = db.prepare('SELECT * FROM slots WHERE day_id = ? AND order_idx >= ? ORDER BY order_idx ASC').all(baseSlot.day_id, baseSlot.order_idx) as any[];
 
       const updateSlot = db.prepare('UPDATE slots SET slot_time = ? WHERE id = ?');
+      const updateExpectedTime = db.prepare(`
+        UPDATE tickets
+        SET expected_slot_time = ?
+        WHERE expected_slot_id = ? AND status != 'cancelled'
+      `);
       const updateTicket = db.prepare('UPDATE seat_reservations SET ticket_code = ? WHERE id = ?');
 
       for (const slot of targetSlots) {
@@ -449,6 +454,7 @@ slotsRouter.post('/api/slots/shift-delay', requireAdminAuth, (req: Request, res:
         const newSlotTime = `${newHh}:${newMm}`;
 
         updateSlot.run(newSlotTime, slot.id);
+        updateExpectedTime.run(newSlotTime, slot.id);
 
         const seats = db.prepare('SELECT id, seat_no FROM seat_reservations WHERE slot_id = ?').all(slot.id) as any[];
         for (const seat of seats) {

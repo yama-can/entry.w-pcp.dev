@@ -8,8 +8,10 @@ import {
 } from '../auth.ts';
 import {
   getActiveDay,
+  getIssuingPaused,
   getMaxWaitMinutes,
   setMaxWaitMinutes,
+  setIssuingPaused,
   getMeetingLeadMinutes,
   setMeetingLeadMinutes,
 } from '../db.ts';
@@ -67,7 +69,25 @@ adminRouter.get('/api/settings', (_req: Request, res: Response) => {
     const activeDay = getActiveDay();
     const maxWaitMinutes = getMaxWaitMinutes();
     const meetingLeadMinutes = getMeetingLeadMinutes();
-    res.json({ success: true, activeDay, maxWaitMinutes, meetingLeadMinutes });
+    res.json({ success: true, activeDay, maxWaitMinutes, meetingLeadMinutes, issuingPaused: getIssuingPaused() });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+adminRouter.post('/api/settings/issuing-pause', requireAdminAuth, (req: Request, res: Response) => {
+  try {
+    if (typeof req.body.paused !== 'boolean') {
+      res.status(400).json({ success: false, message: 'paused must be a boolean' });
+      return;
+    }
+    setIssuingPaused(req.body.paused);
+    broadcastUpdate({ reason: 'issuing_pause_updated', issuingPaused: req.body.paused });
+    res.json({
+      success: true,
+      issuingPaused: req.body.paused,
+      message: req.body.paused ? '発券を一時停止しました' : '発券を再開しました',
+    });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -113,4 +133,3 @@ adminRouter.post('/api/settings/meeting-lead', requireAdminAuth, (req: Request, 
     res.status(500).json({ success: false, message: error.message });
   }
 });
-

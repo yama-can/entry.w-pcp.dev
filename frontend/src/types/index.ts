@@ -111,7 +111,7 @@ export interface CloseResult {
 
 export interface WaitStatus {
   canIssue: boolean;
-  reason: string;
+  reason: 'NO_SLOTS' | 'FULL' | 'WAIT_LIMIT_EXCEEDED' | 'PAUSED' | 'OK' | string;
   message: string;
   maxWaitMinutes: number;
   currentWaitMinutes: number;

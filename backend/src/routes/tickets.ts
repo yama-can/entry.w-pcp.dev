@@ -43,6 +43,7 @@ ticketsRouter.post('/api/issue', (req: Request, res: Response) => {
     if (!waitStatus.canIssue) {
       res.status(400).json({
         success: false,
+        code: waitStatus.reason,
         reason: waitStatus.reason,
         message: waitStatus.message,
         maxWaitMinutes: waitStatus.maxWaitMinutes,
@@ -562,4 +563,3 @@ ticketsRouter.post('/api/cancel', (req: Request, res: Response) => {
     res.status(500).json({ success: false, message: error.message });
   }
 });
-
