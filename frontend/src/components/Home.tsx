@@ -14,6 +14,7 @@ import type {
 } from "@/types";
 import { AlertCircleIcon, CheckCircleIcon } from "@/components/Icons";
 import { getApiBase } from "@/utils/theme";
+import { getTicketDisplayCode } from "@/utils/ticketCode";
 import { NavigationTabs, TabType } from "@/components/NavigationTabs";
 import { KioskTab } from "@/components/KioskTab";
 import { CheckinTab } from "@/components/CheckinTab";
@@ -395,26 +396,32 @@ export default function Home({ activeTab }: HomeProps) {
     }
   };
 
-  // 発券処理
+  // 発券時の即時チェックイン（CheckinTabと同様のAPI・レスポンス処理）
   const handleImmediateCheckin = async () => {
     const ticket = pendingCheckinTicket;
-    if (!ticket?.id) return;
+    if (!ticket) return;
+    const ticketIdentifier = ticket.display_ticket_code || ticket.ticket_code || String(ticket.ticket_number);
+    setErrorMessage(null);
+    setSuccessMessage(null);
     try {
-      const checkinResponse = await fetch(`${API_BASE}/api/checkin/mark`, {
+      const res = await fetch(`${API_BASE}/api/checkin/by-ticket`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ticketId: ticket.id, status: "checked_in" }),
+        body: JSON.stringify({ ticketId: ticket.id, ticketNumber: ticketIdentifier }),
       });
-      const checkinData = await checkinResponse.json();
-      if (!checkinResponse.ok || !checkinData.success) {
-        setErrorMessage(checkinData.message || "発券と同時のチェックインに失敗しました");
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setErrorMessage(data.message || "チェックインに失敗しました");
         return;
       }
       setPendingCheckinTicket(null);
-      setSuccessMessage(`${ticket.display_ticket_code || "整理券"} をチェックイン済みにしました`);
+      if (lastIssued && (lastIssued.id === ticket.id || lastIssued.ticket_number === ticket.ticket_number)) {
+        setLastIssued({ ...lastIssued, status: data.status || "checked_in" });
+      }
+      setSuccessMessage(data.message || `${data.ticketCode || String(data.ticketNumber).padStart(3, "0")} のステータスを更新しました`);
       fetchData();
     } catch {
-      setErrorMessage("発券と同時のチェックイン通信に失敗しました");
+      setErrorMessage("サーバーと通信できませんでした");
     }
   };
 
@@ -441,7 +448,7 @@ export default function Home({ activeTab }: HomeProps) {
       setLastIssued(data.ticket);
       setPendingCheckinTicket(data.ticket);
       setSuccessMessage(
-        `${data.ticket.display_ticket_code || `No. ${String(data.ticket.ticket_number).padStart(3, "0")}`} (${data.ticket.game_name}) 発券完了`
+        `${data.ticket.display_ticket_code || String(data.ticket.ticket_number).padStart(3, "0")} (${data.ticket.game_name}) 発券完了`
         + (data.ticket.meeting_time ? ` ／ 集合時間 ${data.ticket.meeting_time}` : "")
       );
       setScanInput("");
@@ -552,7 +559,7 @@ export default function Home({ activeTab }: HomeProps) {
         setErrorMessage(data.message || "チェックインに失敗しました");
         return;
       }
-      setSuccessMessage(data.message || `No. ${data.ticketNumber} のステータスを更新しました`);
+      setSuccessMessage(data.message || `${data.ticketCode || String(data.ticketNumber).padStart(3, "0")} のステータスを更新しました`);
       setTicketScanInput("");
       ticketInputRef.current?.focus();
       fetchData();
@@ -562,12 +569,20 @@ export default function Home({ activeTab }: HomeProps) {
   };
 
   // 到着ステータス直接マーク（「到着」/「未到着に戻す」）
-  const handleMarkTicket = async (ticketNumber: number, status: "checked_in" | "issued") => {
+  const handleMarkTicket = async (
+    target: TicketItem | { id?: number; ticket_number: number; display_number?: number; display_ticket_code?: string; priority_level?: number },
+    status: "checked_in" | "issued"
+  ) => {
     try {
       const res = await fetch(`${API_BASE}/api/checkin/mark`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ticketNumber, status }),
+        body: JSON.stringify({
+          ticketId: target.id,
+          ticketNumber: target.ticket_number,
+          ticketCode: target.display_ticket_code,
+          status,
+        }),
       });
       const data = await res.json();
       if (data.success) {
@@ -582,14 +597,21 @@ export default function Home({ activeTab }: HomeProps) {
   };
 
   // 整理券の取消
-  const handleCancelTicket = async (ticketNumber: number, e: React.MouseEvent) => {
+  const handleCancelTicket = async (
+    target: TicketItem | { id?: number; ticket_number: number; display_number?: number; display_ticket_code?: string; priority_level?: number },
+    e: React.MouseEvent
+  ) => {
     e.stopPropagation();
-    if (!confirm(`整理番号 No. ${ticketNumber} を取消（欠席扱い）にしますか？`)) return;
+    const code = target.display_ticket_code || getTicketDisplayCode(target.display_number ?? target.ticket_number, target.priority_level);
+    if (!confirm(`整理番号 ${code} を取消（欠席扱い）にしますか？`)) return;
     try {
       const res = await fetch(`${API_BASE}/api/checkin/cancel`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ticketNumber }),
+        body: JSON.stringify({
+          ticketId: target.id,
+          ticketNumber: target.ticket_number,
+        }),
       });
       const data = await res.json();
       if (data.success) {

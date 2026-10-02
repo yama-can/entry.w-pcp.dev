@@ -61,6 +61,7 @@ export interface IssuedTicket {
   expected_lane?: string | null;
   meeting_time?: string | null;
   day_id?: number;
+  status?: string;
   created_at?: string;
   // compatibility fields
   reservation_id?: number;

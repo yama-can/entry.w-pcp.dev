@@ -11,8 +11,8 @@ interface CheckinTabProps {
   ticketInputRef: React.RefObject<HTMLInputElement | null>;
   attendanceSearch: string;
   setAttendanceSearch: (v: string) => void;
-  handleMarkTicket: (ticketNumber: number, status: "checked_in" | "issued") => void;
-  handleCancelTicket: (ticketNumber: number, e: React.MouseEvent) => void;
+  handleMarkTicket: (ticket: TicketItem, status: "checked_in" | "issued") => void;
+  handleCancelTicket: (ticket: TicketItem, e: React.MouseEvent) => void;
   fetchData: () => void;
   bufferSummary?: BufferSummary | null;
 }
@@ -38,10 +38,10 @@ export const CheckinTab: React.FC<CheckinTabProps> = ({
   const searchedTickets = checkinTickets.filter((t) => {
     if (!searchLower) return true;
     const numStr = String(t.ticket_number);
-    const codeStr = `no. ${t.ticket_number}`.toLowerCase();
-    const priorityCode = getTicketDisplayCode(t.ticket_number, t.priority_level).toLowerCase();
+    const dispNumStr = t.display_number !== undefined ? String(t.display_number) : "";
+    const priorityCode = (t.display_ticket_code || getTicketDisplayCode(t.display_number ?? t.ticket_number, t.priority_level)).toLowerCase();
     const game = (t.game_name || "").toLowerCase();
-    return numStr.includes(searchLower) || codeStr.includes(searchLower) || priorityCode.includes(searchLower) || game.includes(searchLower);
+    return numStr.includes(searchLower) || dispNumStr.includes(searchLower) || priorityCode.includes(searchLower) || game.includes(searchLower);
   });
 
   // 遅延判定ヘルパー関数
@@ -372,7 +372,7 @@ export const CheckinTab: React.FC<CheckinTabProps> = ({
                         {/* 整理番号 ＆ 丸い小さなステータスタグ */}
                         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                           <span className="tabular font-mono" style={{ fontSize: "1.15rem", fontWeight: "700", color: "#38bdf8" }}>
-                            {getTicketDisplayCode(item.ticket_number, item.priority_level)}
+                            {item.display_ticket_code || getTicketDisplayCode(item.display_number ?? item.ticket_number, item.priority_level)}
                           </span>
 
                           {/* ★ 丸い小さなタグ（遅延/定刻） */}
@@ -461,7 +461,7 @@ export const CheckinTab: React.FC<CheckinTabProps> = ({
                         <button
                           type="button"
                           className="btn-primary"
-                          onClick={() => handleMarkTicket(item.ticket_number, "checked_in")}
+                          onClick={() => handleMarkTicket(item, "checked_in")}
                           style={{
                             background: "var(--success)",
                             padding: "8px 16px",
@@ -474,7 +474,7 @@ export const CheckinTab: React.FC<CheckinTabProps> = ({
                         </button>
                         <button
                           type="button"
-                          onClick={(e) => handleCancelTicket(item.ticket_number, e)}
+                          onClick={(e) => handleCancelTicket(item, e)}
                           style={{
                             background: "transparent",
                             color: "var(--text-muted)",
@@ -568,7 +568,7 @@ export const CheckinTab: React.FC<CheckinTabProps> = ({
                         {/* 整理番号 ＆ 丸い小さなステータスタグ */}
                         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                           <span className="tabular font-mono" style={{ fontSize: "1.1rem", fontWeight: "700", color: isAssigned ? "var(--text-secondary)" : "#f8fafc" }}>
-                            {getTicketDisplayCode(item.ticket_number, item.priority_level)}
+                            {item.display_ticket_code || getTicketDisplayCode(item.display_number ?? item.ticket_number, item.priority_level)}
                           </span>
 
                           {/* ★ 丸い小さなタグ（遅延/定刻/案内済） */}
@@ -678,7 +678,7 @@ export const CheckinTab: React.FC<CheckinTabProps> = ({
                           <button
                             type="button"
                             className="btn-secondary"
-                            onClick={() => handleMarkTicket(item.ticket_number, "issued")}
+                            onClick={() => handleMarkTicket(item, "issued")}
                             style={{ padding: "6px 10px", fontSize: "0.78rem" }}
                             title="未到着に戻す"
                           >
@@ -687,7 +687,7 @@ export const CheckinTab: React.FC<CheckinTabProps> = ({
                         ) : null}
                         <button
                           type="button"
-                          onClick={(e) => handleCancelTicket(item.ticket_number, e)}
+                          onClick={(e) => handleCancelTicket(item, e)}
                           style={{
                             background: "transparent",
                             color: "var(--text-muted)",

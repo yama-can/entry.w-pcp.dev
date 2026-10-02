@@ -155,6 +155,7 @@ ticketsRouter.post('/api/issue', (req: Request, res: Response) => {
         expected_lane: expectedLane,
         meeting_time: getMeetingTime(expectedSlotTime),
         day_id: activeDay,
+        status: 'issued',
         created_at: new Date().toISOString(),
       };
     });
@@ -219,6 +220,7 @@ ticketsRouter.post('/api/admin/issue-priority', requireAdminAuth, (req: Request,
         expected_lane: seat?.lane ?? null,
         meeting_time: getMeetingTime(seat?.slot_time ?? null),
         day_id: dayId,
+        status: 'issued',
       };
     })();
     broadcastUpdate({ reason: 'priority_ticket_issued', ticket, dayId });
@@ -405,28 +407,46 @@ ticketsRouter.get('/api/checkin/list', (req: Request, res: Response) => {
 // ==========================================
 ticketsRouter.post('/api/checkin/mark', (req: Request, res: Response) => {
   try {
-    const { ticketNumber, ticketId, status } = req.body;
+    const { ticketNumber, ticketCode, ticketId, status } = req.body;
     const activeDay = getActiveDay();
 
     let targetTicket: any = null;
     if (ticketId) {
-      targetTicket = db.prepare('SELECT * FROM tickets WHERE id = ?').get(ticketId);
-    } else if (ticketNumber) {
-      const raw = String(ticketNumber).trim();
-      const num = parseInt(raw.replace(/[^0-9]/g, ''), 10);
+      targetTicket = db.prepare(`
+        SELECT t.*, g.name AS game_name 
+        FROM tickets t 
+        LEFT JOIN games g ON t.game_id = g.id 
+        WHERE t.id = ?
+      `).get(ticketId);
+    } else if (ticketNumber || ticketCode) {
+      const raw = String(ticketNumber || ticketCode || '').trim();
+      const numMatch = raw.match(/\d+/);
       const prefix = raw.match(/^[IP]/i)?.[0].toUpperCase() || '';
-      targetTicket = prefix
-        ? db.prepare('SELECT * FROM tickets WHERE day_id = ? AND display_number = ? AND priority_level = ?')
-          .get(activeDay, num, prefix === 'I' ? 2 : 1)
-        : db.prepare('SELECT * FROM tickets WHERE day_id = ? AND display_number = ? AND priority_level = 0')
-          .get(activeDay, num);
-      if (!targetTicket && !prefix) {
-        targetTicket = db.prepare(`
-          SELECT * FROM tickets
-          WHERE day_id = ? AND ticket_number = ?
-          ORDER BY priority_level ASC
-          LIMIT 1
-        `).get(activeDay, num);
+      if (numMatch) {
+        const num = parseInt(numMatch[0], 10);
+        targetTicket = prefix
+          ? db.prepare(`
+              SELECT t.*, g.name AS game_name 
+              FROM tickets t 
+              LEFT JOIN games g ON t.game_id = g.id 
+              WHERE t.day_id = ? AND t.display_number = ? AND t.priority_level = ?
+            `).get(activeDay, num, prefix === 'I' ? 2 : 1)
+          : db.prepare(`
+              SELECT t.*, g.name AS game_name 
+              FROM tickets t 
+              LEFT JOIN games g ON t.game_id = g.id 
+              WHERE t.day_id = ? AND t.display_number = ? AND t.priority_level = 0
+            `).get(activeDay, num);
+        if (!targetTicket && !prefix) {
+          targetTicket = db.prepare(`
+            SELECT t.*, g.name AS game_name
+            FROM tickets t
+            LEFT JOIN games g ON t.game_id = g.id
+            WHERE t.day_id = ? AND t.ticket_number = ?
+            ORDER BY t.priority_level ASC
+            LIMIT 1
+          `).get(activeDay, num);
+        }
       }
     }
 
@@ -436,131 +456,14 @@ ticketsRouter.post('/api/checkin/mark', (req: Request, res: Response) => {
     }
 
     if (targetTicket.status === 'assigned') {
-      res.status(400).json({ success: false, message: `No. ${targetTicket.ticket_number} は既に枠に割当・案内済みのため変更できません` });
+      const displayCode = targetTicket.display_number !== undefined && targetTicket.display_number !== null
+        ? getTicketCode(targetTicket.display_number, targetTicket.priority_level)
+        : String(targetTicket.ticket_number).padStart(3, '0');
+      res.status(400).json({ success: false, message: `${displayCode} は既に枠に割当・案内済みのため変更できません` });
       return;
     }
 
     const nextStatus = status || (targetTicket.status === 'checked_in' ? 'issued' : 'checked_in');
-    const checkedInAt = nextStatus === 'checked_in' ? new Date().toISOString() : null;
-
-    db.prepare(`
-      UPDATE tickets
-      SET status = ?, checked_in_at = ?
-      WHERE id = ?
-    `).run(nextStatus, checkedInAt, targetTicket.id);
-
-    broadcastUpdate({
-      reason: 'checkin_updated',
-      ticketId: targetTicket.id,
-      ticketNumber: targetTicket.ticket_number,
-      status: nextStatus,
-      dayId: activeDay,
-    });
-
-    const now = new Date();
-    const nowMins = now.getHours() * 60 + now.getMinutes();
-    const isDelayed = isLateTicket(targetTicket);
-
-    const bufferSummary = getBufferSummary(activeDay);
-
-    let message = `No. ${targetTicket.ticket_number} を${nextStatus === 'checked_in' ? '到着済み' : '未到着'}に更新`;
-    if (nextStatus === 'checked_in' && isDelayed) {
-      if (bufferSummary.canAccommodate) {
-        message = `No. ${targetTicket.ticket_number}（遅刻）を受付。調整枠（残${bufferSummary.remainingBufferSeats}席）にて確実に案内可能です`;
-      } else {
-        message = `No. ${targetTicket.ticket_number}（遅刻）を受付。調整枠残席${bufferSummary.remainingBufferSeats}席（空き枠または詰めで調整）`;
-      }
-    }
-
-    res.json({
-      success: true,
-      ticketNumber: targetTicket.ticket_number,
-      status: nextStatus,
-      checkedInAt,
-      isDelayed,
-      bufferSummary,
-      message,
-    });
-  } catch (error: any) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
-
-// ==========================================
-// 番号スキャンまたは入力による到着受付
-// ==========================================
-ticketsRouter.post('/api/checkin/by-ticket', (req: Request, res: Response) => {
-  try {
-    const { ticketCode, ticketNumber } = req.body;
-    const raw = String(ticketNumber || ticketCode || '').trim();
-    if (!raw) {
-      res.status(400).json({ success: false, message: '整理券番号を入力してください' });
-      return;
-    }
-
-    const activeDay = getActiveDay();
-    const numMatch = raw.match(/\d+/);
-    const prefix = raw.match(/^[IP]/i)?.[0].toUpperCase() || '';
-    let targetTicket: any = null;
-
-    if (numMatch) {
-      const num = parseInt(numMatch[0], 10);
-      targetTicket = db.prepare(`
-        SELECT t.*, g.name AS game_name 
-        FROM tickets t 
-        LEFT JOIN games g ON t.game_id = g.id 
-        WHERE t.day_id = ?
-          AND t.display_number = ?
-          AND t.priority_level = ?
-      `).get(activeDay, num, prefix === 'I' ? 2 : prefix === 'P' ? 1 : 0);
-      if (!targetTicket && !prefix) {
-        targetTicket = db.prepare(`
-          SELECT t.*, g.name AS game_name
-          FROM tickets t
-          LEFT JOIN games g ON t.game_id = g.id
-          WHERE t.day_id = ? AND t.ticket_number = ?
-          ORDER BY t.priority_level ASC
-          LIMIT 1
-        `).get(activeDay, num);
-      }
-    }
-
-    if (!targetTicket) {
-      // 従来の席予約コードとの後方互換
-      const reservation = db.prepare(`
-        SELECT r.*, s.slot_time, s.lane, g.name AS game_name
-        FROM seat_reservations r
-        JOIN slots s ON r.slot_id = s.id
-        LEFT JOIN games g ON r.game_id = g.id
-        WHERE s.day_id = ? AND (UPPER(r.ticket_code) = ? OR UPPER(COALESCE(r.assigned_ticket_code, '')) = ?)
-      `).get(activeDay, raw.toUpperCase(), raw.toUpperCase()) as any;
-
-      if (reservation) {
-        const nextSt = reservation.status === 'checked_in' ? 'booked' : 'checked_in';
-        db.prepare('UPDATE seat_reservations SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(nextSt, reservation.id);
-        broadcastUpdate({ reason: 'ticket_checkin', reservationId: reservation.id, nextStatus: nextSt, dayId: activeDay });
-        res.json({
-          success: true,
-          ticketCode: reservation.ticket_code,
-          status: nextSt,
-          message: `整理券 [${reservation.ticket_code}] のステータスを更新しました`,
-        });
-        return;
-      }
-
-      res.status(404).json({ success: false, message: `Day ${activeDay} に整理番号 [${raw}] が見つかりません` });
-      return;
-    }
-
-    if (targetTicket.status === 'assigned') {
-      res.status(400).json({
-        success: false,
-        message: `No. ${targetTicket.ticket_number} は既に枠（スロット）に割当・案内済みのため変更できません`,
-      });
-      return;
-    }
-
-    const nextStatus = targetTicket.status === 'checked_in' ? 'issued' : 'checked_in';
     const checkedInAt = nextStatus === 'checked_in' ? new Date().toISOString() : null;
 
     db.prepare(`
@@ -583,19 +486,163 @@ ticketsRouter.post('/api/checkin/by-ticket', (req: Request, res: Response) => {
 
     const bufferSummary = getBufferSummary(activeDay);
 
-    let message = `No. ${targetTicket.ticket_number} (${targetTicket.game_name}): ${nextStatus === 'checked_in' ? '到着済にしました' : '未到着に戻しました'}`;
+    const displayCode = targetTicket.display_number !== undefined && targetTicket.display_number !== null
+      ? getTicketCode(targetTicket.display_number, targetTicket.priority_level)
+      : String(targetTicket.ticket_number).padStart(3, '0');
+
+    let message = targetTicket.game_name
+      ? `${displayCode} (${targetTicket.game_name}): ${nextStatus === 'checked_in' ? '到着済にしました' : '未到着に戻しました'}`
+      : `${displayCode} を${nextStatus === 'checked_in' ? '到着済み' : '未到着'}に更新`;
     if (nextStatus === 'checked_in' && isDelayed) {
       if (bufferSummary.canAccommodate) {
-        message = `No. ${targetTicket.ticket_number}（遅刻）を受付。調整枠（残${bufferSummary.remainingBufferSeats}席）にて確実に案内可能です`;
+        message = `${displayCode}（遅刻）を受付。調整枠（残${bufferSummary.remainingBufferSeats}席）にて確実に案内可能です`;
       } else {
-        message = `No. ${targetTicket.ticket_number}（遅刻）を受付。調整枠残席${bufferSummary.remainingBufferSeats}席（空き枠または詰めで調整）`;
+        message = `${displayCode}（遅刻）を受付。調整枠残席${bufferSummary.remainingBufferSeats}席（空き枠または詰めで調整）`;
       }
     }
 
     res.json({
       success: true,
       ticketNumber: targetTicket.ticket_number,
-      ticketCode: `No. ${targetTicket.ticket_number}`,
+      ticketCode: displayCode,
+      gameName: targetTicket.game_name,
+      status: nextStatus,
+      checkedInAt,
+      isDelayed,
+      bufferSummary,
+      message,
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// ==========================================
+// 番号スキャンまたは入力による到着受付
+// ==========================================
+ticketsRouter.post('/api/checkin/by-ticket', (req: Request, res: Response) => {
+  try {
+    const { ticketCode, ticketNumber, ticketId, status } = req.body;
+    const raw = String(ticketNumber || ticketCode || '').trim();
+    if (!raw && !ticketId) {
+      res.status(400).json({ success: false, message: '整理券番号を入力してください' });
+      return;
+    }
+
+    const activeDay = getActiveDay();
+    let targetTicket: any = null;
+
+    if (ticketId) {
+      targetTicket = db.prepare(`
+        SELECT t.*, g.name AS game_name 
+        FROM tickets t 
+        LEFT JOIN games g ON t.game_id = g.id 
+        WHERE t.id = ?
+      `).get(ticketId);
+    }
+
+    if (!targetTicket && raw) {
+      const numMatch = raw.match(/\d+/);
+      const prefix = raw.match(/^[IP]/i)?.[0].toUpperCase() || '';
+
+      if (numMatch) {
+        const num = parseInt(numMatch[0], 10);
+        targetTicket = db.prepare(`
+          SELECT t.*, g.name AS game_name 
+          FROM tickets t 
+          LEFT JOIN games g ON t.game_id = g.id 
+          WHERE t.day_id = ?
+            AND t.display_number = ?
+            AND t.priority_level = ?
+        `).get(activeDay, num, prefix === 'I' ? 2 : prefix === 'P' ? 1 : 0);
+        if (!targetTicket && !prefix) {
+          targetTicket = db.prepare(`
+            SELECT t.*, g.name AS game_name
+            FROM tickets t
+            LEFT JOIN games g ON t.game_id = g.id
+            WHERE t.day_id = ? AND t.ticket_number = ?
+            ORDER BY t.priority_level ASC
+            LIMIT 1
+          `).get(activeDay, num);
+        }
+      }
+    }
+
+    if (!targetTicket) {
+      // 従来の席予約コードとの後方互換
+      const reservation = db.prepare(`
+        SELECT r.*, s.slot_time, s.lane, g.name AS game_name
+        FROM seat_reservations r
+        JOIN slots s ON r.slot_id = s.id
+        LEFT JOIN games g ON r.game_id = g.id
+        WHERE s.day_id = ? AND (UPPER(r.ticket_code) = ? OR UPPER(COALESCE(r.assigned_ticket_code, '')) = ?)
+      `).get(activeDay, raw.toUpperCase(), raw.toUpperCase()) as any;
+
+      if (reservation) {
+        const nextSt = status || (reservation.status === 'checked_in' ? 'booked' : 'checked_in');
+        db.prepare('UPDATE seat_reservations SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?').run(nextSt, reservation.id);
+        broadcastUpdate({ reason: 'ticket_checkin', reservationId: reservation.id, nextStatus: nextSt, dayId: activeDay });
+        res.json({
+          success: true,
+          ticketCode: reservation.ticket_code,
+          status: nextSt,
+          message: `整理券 [${reservation.ticket_code}] のステータスを更新しました`,
+        });
+        return;
+      }
+
+      res.status(404).json({ success: false, message: `Day ${activeDay} に整理番号 [${raw}] が見つかりません` });
+      return;
+    }
+
+    const displayCode = targetTicket.display_number !== undefined && targetTicket.display_number !== null
+      ? getTicketCode(targetTicket.display_number, targetTicket.priority_level)
+      : String(targetTicket.ticket_number).padStart(3, '0');
+
+    if (targetTicket.status === 'assigned') {
+      res.status(400).json({
+        success: false,
+        message: `${displayCode} は既に枠（スロット）に割当・案内済みのため変更できません`,
+      });
+      return;
+    }
+
+    const nextStatus = status || (targetTicket.status === 'checked_in' ? 'issued' : 'checked_in');
+    const checkedInAt = nextStatus === 'checked_in' ? new Date().toISOString() : null;
+
+    db.prepare(`
+      UPDATE tickets
+      SET status = ?, checked_in_at = ?
+      WHERE id = ?
+    `).run(nextStatus, checkedInAt, targetTicket.id);
+
+    broadcastUpdate({
+      reason: 'ticket_checkin',
+      ticketId: targetTicket.id,
+      ticketNumber: targetTicket.ticket_number,
+      status: nextStatus,
+      dayId: activeDay,
+    });
+
+    const now = new Date();
+    const nowMins = now.getHours() * 60 + now.getMinutes();
+    const isDelayed = isLateTicket(targetTicket);
+
+    const bufferSummary = getBufferSummary(activeDay);
+
+    let message = `${displayCode} (${targetTicket.game_name}): ${nextStatus === 'checked_in' ? '到着済にしました' : '未到着に戻しました'}`;
+    if (nextStatus === 'checked_in' && isDelayed) {
+      if (bufferSummary.canAccommodate) {
+        message = `${displayCode}（遅刻）を受付。調整枠（残${bufferSummary.remainingBufferSeats}席）にて確実に案内可能です`;
+      } else {
+        message = `${displayCode}（遅刻）を受付。調整枠残席${bufferSummary.remainingBufferSeats}席（空き枠または詰めで調整）`;
+      }
+    }
+
+    res.json({
+      success: true,
+      ticketNumber: targetTicket.ticket_number,
+      ticketCode: displayCode,
       gameName: targetTicket.game_name,
       status: nextStatus,
       checkedInAt,
@@ -655,7 +702,10 @@ ticketsRouter.post('/api/checkin/cancel', (req: Request, res: Response) => {
     })();
 
     broadcastUpdate({ reason: 'ticket_cancelled', ticketNumber: targetTicket.ticket_number, dayId: activeDay });
-    res.json({ success: true, message: `No. ${targetTicket.ticket_number} を取消しました` });
+    const cancelCode = targetTicket.display_number !== undefined && targetTicket.display_number !== null
+      ? getTicketCode(targetTicket.display_number, targetTicket.priority_level)
+      : String(targetTicket.ticket_number).padStart(3, '0');
+    res.json({ success: true, message: `${cancelCode} を取消しました` });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }

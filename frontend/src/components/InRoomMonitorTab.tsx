@@ -139,7 +139,7 @@ export const InRoomMonitorTab: React.FC<InRoomMonitorTabProps> = ({
                           ) : (
                             <>
                               <span className="tabular font-mono" style={{ color: "#38bdf8", fontWeight: "800" }}>
-                                {seat.display_ticket_code || (seat.ticket_number ? (seat.priority_level === 2 ? `I${String(seat.display_number ?? seat.ticket_number).padStart(3, "0")}` : seat.priority_level === 1 ? `P${String(seat.display_number ?? seat.ticket_number).padStart(3, "0")}` : `No. ${String(seat.display_number ?? seat.ticket_number).padStart(3, "0")}`) : seat.ticket_code)}
+                                {seat.display_ticket_code || (seat.ticket_number ? (seat.priority_level === 2 ? `I${String(seat.display_number ?? seat.ticket_number).padStart(3, "0")}` : seat.priority_level === 1 ? `P${String(seat.display_number ?? seat.ticket_number).padStart(3, "0")}` : String(seat.display_number ?? seat.ticket_number).padStart(3, "0")) : seat.ticket_code)}
                               </span>
                               <span>{seat.game_name || "未指定"}</span>
                             </>

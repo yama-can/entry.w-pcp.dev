@@ -3,6 +3,7 @@ import { getTicketDisplayCode } from "../utils/ticketCode";
 import { Game, IssuedTicket, WaitStatus } from "../types";
 import {
   AlertCircleIcon,
+  CheckCircleIcon,
   QrCodeIcon,
   GamepadIcon,
   TicketIcon,
@@ -268,7 +269,7 @@ export const KioskTab: React.FC<KioskTabProps> = ({
                 Day {activeDay} / 案内待機人数: {lastIssued.waiting_count || 1}名
               </div>
 
-              {pendingCheckinTicket?.id === lastIssued.id && (
+              {pendingCheckinTicket?.id === lastIssued.id && lastIssued.status !== "checked_in" && (
                 <div
                   style={{
                     marginTop: "12px",
@@ -289,6 +290,27 @@ export const KioskTab: React.FC<KioskTabProps> = ({
                   >
                     今すぐチェックイン
                   </button>
+                </div>
+              )}
+
+              {lastIssued.status === "checked_in" && (
+                <div
+                  style={{
+                    marginTop: "12px",
+                    padding: "10px 14px",
+                    borderRadius: "var(--radius-md)",
+                    border: "1px solid var(--success)",
+                    background: "rgba(16, 185, 129, 0.12)",
+                    color: "#86efac",
+                    fontWeight: 700,
+                    fontSize: "0.95rem",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                  }}
+                >
+                  <CheckCircleIcon size={18} color="#86efac" />
+                  <span>チェックイン完了（到着済み）</span>
                 </div>
               )}
 

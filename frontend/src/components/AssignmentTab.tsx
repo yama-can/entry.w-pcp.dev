@@ -374,7 +374,7 @@ export const AssignmentTab: React.FC<AssignmentTabProps> = ({
                   >
                     {planned.displayTicketCode ||
                       (planned.ticketNumber
-                        ? (planned.priorityLevel === 2 ? `I${String(planned.ticketNumber).padStart(3, "0")}` : planned.priorityLevel === 1 ? `P${String(planned.ticketNumber).padStart(3, "0")}` : `No. ${String(planned.ticketNumber).padStart(3, "0")}`)
+                        ? (planned.priorityLevel === 2 ? `I${String(planned.ticketNumber).padStart(3, "0")}` : planned.priorityLevel === 1 ? `P${String(planned.ticketNumber).padStart(3, "0")}` : String(planned.ticketNumber).padStart(3, "0"))
                         : planned.ticketCode)}
                   </div>
 

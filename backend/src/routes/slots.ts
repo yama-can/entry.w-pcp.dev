@@ -699,7 +699,7 @@ slotsRouter.get('/api/timeline', (req: Request, res: Response) => {
           display_number: row.display_number,
           is_maintenance: row.seat_is_maintenance === 1,
           display_ticket_code: row.ticket_number
-            ? (row.priority_level === 2 ? `I${String(row.display_number ?? row.ticket_number).padStart(3, '0')}` : row.priority_level === 1 ? `P${String(row.display_number ?? row.ticket_number).padStart(3, '0')}` : `No. ${String(row.display_number ?? row.ticket_number).padStart(3, '0')}`)
+            ? (row.priority_level === 2 ? `I${String(row.display_number ?? row.ticket_number).padStart(3, '0')}` : row.priority_level === 1 ? `P${String(row.display_number ?? row.ticket_number).padStart(3, '0')}` : String(row.display_number ?? row.ticket_number).padStart(3, '0'))
             : (row.assigned_ticket_code || row.ticket_code),
           note: row.note,
           status: row.status,

@@ -37,7 +37,7 @@ assignmentRouter.get('/api/assignment/status', (req: Request, res: Response) => 
         CASE 
           WHEN r.ticket_number IS NOT NULL AND r.priority_level = 2 THEN 'I' || printf('%03d', COALESCE(t.display_number, r.ticket_number))
           WHEN r.ticket_number IS NOT NULL AND r.priority_level = 1 THEN 'P' || printf('%03d', COALESCE(t.display_number, r.ticket_number))
-          WHEN r.ticket_number IS NOT NULL THEN printf('No. %03d', COALESCE(t.display_number, r.ticket_number))
+          WHEN r.ticket_number IS NOT NULL THEN printf('%03d', COALESCE(t.display_number, r.ticket_number))
           WHEN r.assigned_ticket_code IS NOT NULL THEN r.assigned_ticket_code
           ELSE r.ticket_code
         END AS display_ticket_code,
@@ -236,7 +236,7 @@ assignmentRouter.get('/api/assignment/status', (req: Request, res: Response) => 
             ? `I${String(t.display_number ?? t.ticket_number).padStart(3, '0')}`
             : t.priority_level === 1
               ? `P${String(t.display_number ?? t.ticket_number).padStart(3, '0')}`
-              : `No. ${String(t.display_number ?? t.ticket_number).padStart(3, '0')}`,
+              : String(t.display_number ?? t.ticket_number).padStart(3, '0'),
           gameName: t.game_name,
           gameId: t.game_id,
           expectedSlotId: t.expected_slot_id,
@@ -619,7 +619,7 @@ assignmentRouter.get('/api/seat-status', (req: Request, res: Response) => {
     `).get(activeDay, lane, seat) as any;
 
     if (targetSeat) {
-      const displayCode = targetSeat.ticket_number ? `No. ${targetSeat.ticket_number}` : targetSeat.ticket_code;
+      const displayCode = targetSeat.ticket_number ? String(targetSeat.ticket_number).padStart(3, '0') : targetSeat.ticket_code;
       res.json({
         success: true,
         hasReservation: true,

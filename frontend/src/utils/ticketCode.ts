@@ -3,5 +3,5 @@ export function getTicketDisplayCode(ticketNumber: number | null | undefined, pr
   const number = String(ticketNumber).padStart(3, "0");
   if (priorityLevel === 2) return `I${number}`;
   if (priorityLevel === 1) return `P${number}`;
-  return `No. ${number}`;
+  return number;
 }

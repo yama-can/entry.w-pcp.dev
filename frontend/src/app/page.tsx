@@ -3,7 +3,7 @@ const pages = [
   { href: "/checkin", title: "受付", description: "来場者のチェックイン、遅刻・取消の処理" },
   { href: "/assignment", title: "枠割当", description: "到着者を枠と席へ割り当てる" },
   { href: "/inroom", title: "室内モニター", description: "確定した枠、席、準備状況を確認する" },
-  { href: "/monitor", title: "呼び出しモニター", description: "来場者向けに整理券と席を表示する" },
+  { href: "/monitor", title: "案内モニター", description: "案内係向けに確定枠の整理券と席を表示する" },
   { href: "/scheduler", title: "進行", description: "入場・退場時刻と進行状況を管理する" },
   { href: "/admin", title: "設定", description: "枠、席、調整枠、メンテナンスを管理する" },
 ];
