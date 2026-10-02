@@ -1,0 +1,15 @@
+[Unit]
+Description=Entry Ticket System Next.js frontend
+After=network.target entry-backend.service
+
+[Service]
+Type=simple
+User=yama_can
+WorkingDirectory=/home/yama_can/entry.w-pcp.dev/frontend
+Environment=NODE_ENV=production
+ExecStart=/home/yama_can/entry.w-pcp.dev/frontend/node_modules/.bin/next start -p 3000 -H 127.0.0.1
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

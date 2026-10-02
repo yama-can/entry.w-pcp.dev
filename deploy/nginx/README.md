@@ -71,3 +71,44 @@ sudo systemctl reload nginx
 Cloudflare's Edge Certificate handles the browser-facing certificate. The
 Origin CA certificate is only used between Cloudflare and NGINX, so the
 origin should not be accessed directly by browsers.
+
+## Run the application as services
+
+Use systemd rather than `npm run start` in an SSH session. The included units
+assume the repository is `/home/yama_can/entry.w-pcp.dev` and the Linux user
+is `yama_can`; edit those values if the deployment path or user differs.
+
+Build the frontend once, then create the backend environment file:
+
+```sh
+cd ~/entry.w-pcp.dev
+npm run build:frontend
+
+sudo install -d -m 700 /etc/entry-w-pcp
+sudo tee /etc/entry-w-pcp/backend.env >/dev/null <<'EOF'
+BASIC_AUTH_USERNAME=operator
+BASIC_AUTH_PASSWORD=replace-with-the-same-password-as-nginx
+EOF
+sudo chmod 600 /etc/entry-w-pcp/backend.env
+```
+
+Install and enable both services:
+
+```sh
+sudo cp deploy/systemd/entry-backend.service /etc/systemd/system/
+sudo cp deploy/systemd/entry-frontend.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now entry-backend.service entry-frontend.service
+```
+
+Check status and logs:
+
+```sh
+sudo systemctl status entry-backend.service entry-frontend.service --no-pager
+sudo journalctl -u entry-backend.service -f
+sudo journalctl -u entry-frontend.service -f
+```
+
+Both services use `Restart=on-failure`, start automatically after reboot, and
+listen only on localhost for the frontend (`127.0.0.1:3000`) and the backend's
+configured bind address. NGINX remains the only public application entry point.
