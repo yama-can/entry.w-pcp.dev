@@ -96,7 +96,7 @@ export default function Home({ activeTab }: HomeProps) {
     if (savedToken) {
       setAdminToken(savedToken);
       fetch(`${API_BASE}/api/admin/verify`, {
-        headers: { Authorization: `Bearer ${savedToken}` },
+        headers: { "X-Admin-Token": savedToken },
       })
         .then((res) => res.json())
         .then((data) => {
@@ -145,7 +145,7 @@ export default function Home({ activeTab }: HomeProps) {
       try {
         await fetch(`${API_BASE}/api/admin/logout`, {
           method: "POST",
-          headers: { Authorization: `Bearer ${adminToken}` },
+          headers: { "X-Admin-Token": adminToken },
         });
       } catch {}
     }
@@ -161,7 +161,7 @@ export default function Home({ activeTab }: HomeProps) {
       "Content-Type": "application/json",
     };
     if (adminToken) {
-      headers["Authorization"] = `Bearer ${adminToken}`;
+      headers["X-Admin-Token"] = adminToken;
     }
     const res = await fetch(`${API_BASE}${endpoint}`, {
       method: "POST",

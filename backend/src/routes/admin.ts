@@ -5,6 +5,7 @@ import {
   generateAdminToken,
   isValidAdminToken,
   revokeAdminToken,
+  getAdminTokenFromRequest,
 } from '../auth.ts';
 import {
   getActiveDay,
@@ -36,10 +37,9 @@ adminRouter.post('/api/admin/login', (req: Request, res: Response) => {
   }
 });
 
-adminRouter.get('/api/admin/verify', (req: Request, res: Response) => {
+const handleVerify = (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+    const token = getAdminTokenFromRequest(req);
     if (isValidAdminToken(token)) {
       res.json({ success: true, valid: true });
     } else {
@@ -48,12 +48,14 @@ adminRouter.get('/api/admin/verify', (req: Request, res: Response) => {
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }
-});
+};
+
+adminRouter.get('/api/admin/verify', handleVerify);
+adminRouter.post('/api/admin/verify', handleVerify);
 
 adminRouter.post('/api/admin/logout', (req: Request, res: Response) => {
   try {
-    const authHeader = req.headers.authorization;
-    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+    const token = getAdminTokenFromRequest(req);
     revokeAdminToken(token);
     res.json({ success: true, message: 'ログアウトしました' });
   } catch (error: any) {

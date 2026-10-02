@@ -5,11 +5,26 @@ const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
 const adminTokens = new Set<string>();
 
 /**
- * 管理者認証ミドルウェア (Bearer トークン検証)
+ * リクエストから管理者トークンを抽出 (X-Admin-Token または Authorization: Bearer)
+ * ※ Basic認証との競合を避けるため X-Admin-Token を最優先
+ */
+export function getAdminTokenFromRequest(req: Request): string | null {
+  const xAdminToken = req.headers['x-admin-token'];
+  if (typeof xAdminToken === 'string' && xAdminToken.trim()) {
+    return xAdminToken.trim();
+  }
+  const authHeader = req.headers.authorization;
+  if (authHeader?.startsWith('Bearer ')) {
+    return authHeader.slice(7).trim();
+  }
+  return null;
+}
+
+/**
+ * 管理者認証ミドルウェア (X-Admin-Token または Bearer トークン検証)
  */
 export function requireAdminAuth(req: Request, res: Response, next: NextFunction): void {
-  const authHeader = req.headers.authorization;
-  const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
+  const token = getAdminTokenFromRequest(req);
   if (token && adminTokens.has(token)) {
     return next();
   }
