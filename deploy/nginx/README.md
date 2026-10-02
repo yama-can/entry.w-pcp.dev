@@ -76,7 +76,10 @@ origin should not be accessed directly by browsers.
 
 Use systemd rather than `npm run start` in an SSH session. The included units
 assume the repository is `/home/yama_can/entry.w-pcp.dev` and the Linux user
-is `yama_can`; edit those values if the deployment path or user differs.
+is `yama_can`; edit those values if the deployment path or user differs. Node.js
+must be available in systemd's PATH. Check with `command -v node`; if Node.js
+was installed with nvm, replace `/usr/bin/env node` in the backend unit with
+the absolute path returned by that command.
 
 Build the frontend once, then create the backend environment file:
 

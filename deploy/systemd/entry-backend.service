@@ -7,7 +7,7 @@ Type=simple
 User=yama_can
 WorkingDirectory=/home/yama_can/entry.w-pcp.dev
 EnvironmentFile=/etc/entry-w-pcp/backend.env
-ExecStart=/usr/bin/node --experimental-strip-types backend/src/index.ts
+ExecStart=/usr/bin/env node --experimental-strip-types backend/src/index.ts
 Restart=on-failure
 RestartSec=5
 
