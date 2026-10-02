@@ -31,6 +31,8 @@ interface AdminTabProps {
   setSeatsPerSlot: (v: string) => void;
   lanesInput: string;
   setLanesInput: (v: string) => void;
+  laneSeatCountsInput: string;
+  setLaneSeatCountsInput: (v: string) => void;
   playDuration: string;
   setPlayDuration: (v: string) => void;
   cleanupDuration: string;
@@ -65,6 +67,9 @@ interface AdminTabProps {
   setMaxWaitLimitInput: (v: string) => void;
   handleUpdateMaxWait: (minutes: number) => void;
   handleSetIssuingPaused: (paused: boolean) => void;
+  priorityGameId: string;
+  setPriorityGameId: (v: string) => void;
+  handleIssuePriorityTicket: (priorityLevel: 1 | 2) => void;
   meetingLeadInput: string;
   setMeetingLeadInput: (v: string) => void;
   handleUpdateMeetingLead: (minutes: number) => void;
@@ -92,6 +97,7 @@ interface AdminTabProps {
   handleShiftDelay: (slotId: number, shiftMinutes: number) => void;
   handleToggleBuffer: (slotId: number) => void;
   handleToggleMaintenance: (slotId: number) => void;
+  handleToggleSeatMaintenance: (reservationId: number) => void;
   setQuickAdjust: (slot: SlotTimeline) => void;
   isAdminLoggedIn: boolean;
   onLogin: (password: string) => Promise<boolean>;
@@ -120,6 +126,8 @@ export const AdminTab: React.FC<AdminTabProps> = ({
   setSeatsPerSlot,
   lanesInput,
   setLanesInput,
+  laneSeatCountsInput,
+  setLaneSeatCountsInput,
   playDuration,
   setPlayDuration,
   cleanupDuration,
@@ -139,6 +147,9 @@ export const AdminTab: React.FC<AdminTabProps> = ({
   setMaxWaitLimitInput,
   handleUpdateMaxWait,
   handleSetIssuingPaused,
+  priorityGameId,
+  setPriorityGameId,
+  handleIssuePriorityTicket,
   meetingLeadInput,
   setMeetingLeadInput,
   handleUpdateMeetingLead,
@@ -158,14 +169,40 @@ export const AdminTab: React.FC<AdminTabProps> = ({
   handleShiftDelay,
   handleToggleBuffer,
   handleToggleMaintenance,
+  handleToggleSeatMaintenance,
   setQuickAdjust,
   isAdminLoggedIn,
   onLogin,
   onLogout,
 }) => {
+  const laneNames = lanesInput
+    .split(",")
+    .map((lane) => lane.trim().toUpperCase())
+    .filter(Boolean);
+
+  const laneSeatCountValues = laneSeatCountsInput.split(",").reduce<Record<string, string>>((values, item) => {
+    const [lane, count] = item.split(":").map((value) => value.trim().toUpperCase());
+    if (lane) values[lane] = count || "";
+    return values;
+  }, {});
+
+  const updateLaneSeatCount = (lane: string, value: string) => {
+    const nextValues = laneNames.reduce<Record<string, string>>((values, name) => {
+      values[name] = name === lane ? value : (laneSeatCountValues[name] || "");
+      return values;
+    }, {});
+    setLaneSeatCountsInput(
+      laneNames
+        .filter((name) => nextValues[name] !== "")
+        .map((name) => `${name}:${nextValues[name]}`)
+        .join(", ")
+    );
+  };
+
   const [password, setPassword] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const [loginError, setLoginError] = React.useState<string | null>(null);
+  const [adminSection, setAdminSection] = React.useState<"settings" | "priority">("settings");
 
   const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -313,7 +350,37 @@ export const AdminTab: React.FC<AdminTabProps> = ({
         </button>
       </div>
 
-      <div className="admin-grid">
+      <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>
+        <button type="button" className={adminSection === "settings" ? "btn-primary" : "btn-secondary"} onClick={() => setAdminSection("settings")}>
+          設定
+        </button>
+        <button type="button" className={adminSection === "priority" ? "btn-primary" : "btn-secondary"} onClick={() => setAdminSection("priority")}>
+          優先チケット
+        </button>
+      </div>
+
+      {adminSection === "priority" && (
+        <div className="card" style={{ marginBottom: "16px" }}>
+          <h3 style={{ fontSize: "1.1rem", fontWeight: "bold", marginBottom: "8px" }}>優先チケット発行</h3>
+          <p style={{ color: "#94a3b8", fontSize: "0.85rem", marginBottom: "14px" }}>
+            即時チケットは I、優先チケットは P のコードで発行されます。
+          </p>
+          <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+            <select className="form-input" value={priorityGameId} onChange={(e) => setPriorityGameId(e.target.value)} style={{ flex: "1 1 240px" }}>
+              <option value="">ゲームを選択</option>
+              {games.map((game) => <option key={game.id} value={game.id}>{game.name}</option>)}
+            </select>
+            <button type="button" className="btn-secondary" disabled={!priorityGameId} onClick={() => handleIssuePriorityTicket(1)}>
+              P 優先チケット
+            </button>
+            <button type="button" className="btn-secondary" disabled={!priorityGameId} onClick={() => handleIssuePriorityTicket(2)} style={{ color: "#f87171" }}>
+              I 即時チケット
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="admin-grid" style={{ display: adminSection === "settings" ? undefined : "none" }}>
         {/* スロット生成 / ある時点以降の調整フォーム */}
         <div className="card" ref={adminFormRef}>
           <div
@@ -467,6 +534,25 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                   max={23}
                   required={genMode !== "append"}
                 />
+              </div>
+
+              <div className="form-group" style={{ marginTop: "12px" }}>
+                <label className="form-label">例外チケット発行（管理者）</label>
+                <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                  <select className="form-input" value={priorityGameId} onChange={(e) => setPriorityGameId(e.target.value)} style={{ flex: "1 1 220px" }}>
+                    <option value="">ゲームを選択</option>
+                    {games.map((game) => <option key={game.id} value={game.id}>{game.name}</option>)}
+                  </select>
+                  <button type="button" className="btn-secondary" disabled={!priorityGameId} onClick={() => handleIssuePriorityTicket(1)}>
+                    優先チケット
+                  </button>
+                  <button type="button" className="btn-secondary" disabled={!priorityGameId} onClick={() => handleIssuePriorityTicket(2)} style={{ color: "#f87171" }}>
+                    即時チケット
+                  </button>
+                </div>
+                <div style={{ fontSize: "0.75rem", color: "#94a3b8", marginTop: "4px" }}>
+                  即時チケットは定刻より先、優先チケットは定刻の次に割り当てます。
+                </div>
               </div>
               <div className="form-group">
                 <label className="form-label">
@@ -705,6 +791,44 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                 placeholder="例: A, B  または  A, B, C  または  A"
                 required
               />
+              <label className="form-label" style={{ display: "block", marginTop: "10px" }}>
+                レーン別席数（任意）
+              </label>
+              <input
+                type="text"
+                className="form-input tabular font-mono"
+                value={laneSeatCountsInput}
+                onChange={(e) => setLaneSeatCountsInput(e.target.value)}
+                placeholder="例: A:4, B:5（空欄なら全レーン共通）"
+              />
+              <p style={{ fontSize: "0.75rem", color: "#94a3b8", margin: "6px 0 0" }}>
+                指定したレーンの各枠に作成する席数です。枠数は上の「枠数」で共通に指定します。
+              </p>
+              {laneNames.length > 0 && (
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: `repeat(${Math.min(laneNames.length, 4)}, minmax(0, 1fr))`,
+                    gap: "8px",
+                    marginTop: "10px",
+                  }}
+                >
+                  {laneNames.map((lane) => (
+                    <div className="form-group" key={lane} style={{ marginBottom: 0 }}>
+                      <label className="form-label">{lane}枠数</label>
+                      <input
+                        type="number"
+                        className="form-input tabular font-mono"
+                        min={0}
+                        max={200}
+                        value={laneSeatCountValues[lane] || ""}
+                        onChange={(e) => updateLaneSeatCount(lane, e.target.value)}
+                        placeholder="未指定"
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             {/* 拘束時間＋入れ替え時間、レーンオフセット、調整枠 */}
@@ -954,7 +1078,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                 fontWeight: "bold",
               }}
             >
-              現在: 開始 {meetingLeadInput || "5"} 分前
+              現在: 開始 {meetingLeadInput || "7"} 分前
             </span>
           </div>
           <p
@@ -965,7 +1089,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
               lineHeight: "1.5",
             }}
           >
-            体験開始の何分前に集合場所へ案内するかを設定します（デフォルト5分前）。
+            体験開始の何分前に集合場所へ案内するかを設定します（デフォルト7分前）。
           </p>
           <div style={{ display: "flex", gap: "12px", alignItems: "flex-end", flexWrap: "wrap" }}>
             <div className="form-group" style={{ flex: 1, minWidth: "180px", marginBottom: 0 }}>
@@ -989,7 +1113,7 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                 fontWeight: "bold",
                 padding: "8px 18px",
               }}
-              onClick={() => handleUpdateMeetingLead(parseInt(meetingLeadInput, 10) || 5)}
+              onClick={() => handleUpdateMeetingLead(parseInt(meetingLeadInput, 10) || 7)}
             >
               保存
             </button>
@@ -1407,8 +1531,9 @@ export const AdminTab: React.FC<AdminTabProps> = ({
                               <span
                                 key={seat.id}
                                 className="seat-status-mini-badge"
-                                style={{ background: bg, color: "#fff" }}
-                                title={`${seat.seat_no}番席: ${seat.status} ${
+                                style={{ background: seat.is_maintenance ? "#ca8a04" : bg, color: "#fff", cursor: "pointer", opacity: seat.is_maintenance ? 0.9 : 1 }}
+                                onClick={() => handleToggleSeatMaintenance(seat.id)}
+                                title={`${seat.seat_no}番席: ${seat.is_maintenance ? "メンテナンス中（クリックで解除）" : `${seat.status}（クリックでメンテナンス化）`} ${
                                   seat.game_name ? `(${seat.game_name})` : ""
                                 }`}
                               >

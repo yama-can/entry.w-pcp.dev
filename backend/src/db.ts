@@ -43,6 +43,7 @@ export function initDatabase() {
       cleanup_duration INTEGER NOT NULL DEFAULT 2,
       is_buffer INTEGER DEFAULT 0,
       is_maintenance INTEGER DEFAULT 0,
+      priority_level INTEGER NOT NULL DEFAULT 0,
       is_closed INTEGER DEFAULT 0
     );
 
@@ -53,6 +54,7 @@ export function initDatabase() {
       ticket_code TEXT UNIQUE NOT NULL,
       game_id TEXT,
       status TEXT NOT NULL DEFAULT 'empty',
+      is_maintenance INTEGER DEFAULT 0,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (slot_id) REFERENCES slots(id) ON DELETE CASCADE,
       FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE SET NULL,
@@ -77,13 +79,20 @@ export function initDatabase() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       day_id INTEGER NOT NULL DEFAULT 1,
       ticket_number INTEGER NOT NULL,
+      display_number INTEGER,
       game_id TEXT NOT NULL,
+      priority_level INTEGER NOT NULL DEFAULT 0,
+      is_late INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'issued',
       assigned_slot_id INTEGER,
       assigned_seat_no INTEGER,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       checked_in_at DATETIME,
       assigned_at DATETIME,
+      expected_slot_id INTEGER,
+      expected_slot_time TEXT,
+      original_expected_slot_id INTEGER,
+      original_expected_slot_time TEXT,
       FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE RESTRICT,
       FOREIGN KEY (assigned_slot_id) REFERENCES slots(id) ON DELETE SET NULL,
       UNIQUE(day_id, ticket_number)
@@ -131,11 +140,49 @@ export function initDatabase() {
     db.exec(`ALTER TABLE seat_reservations ADD COLUMN ticket_number INTEGER`);
   } catch {}
   try {
+    db.exec(`ALTER TABLE seat_reservations ADD COLUMN is_maintenance INTEGER DEFAULT 0`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE seat_reservations ADD COLUMN priority_level INTEGER NOT NULL DEFAULT 0`);
+  } catch {}
+  try {
     db.exec(`ALTER TABLE tickets ADD COLUMN expected_slot_id INTEGER`);
   } catch {}
   try {
     db.exec(`ALTER TABLE tickets ADD COLUMN expected_slot_time TEXT`);
   } catch {}
+  try {
+    db.exec(`ALTER TABLE tickets ADD COLUMN original_expected_slot_id INTEGER`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE tickets ADD COLUMN original_expected_slot_time TEXT`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE tickets ADD COLUMN priority_level INTEGER NOT NULL DEFAULT 0`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE tickets ADD COLUMN is_late INTEGER NOT NULL DEFAULT 0`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE tickets ADD COLUMN display_number INTEGER`);
+  } catch {}
+  db.exec(`
+    UPDATE tickets
+    SET display_number = (
+      SELECT COUNT(*)
+      FROM tickets prior
+      WHERE prior.day_id = tickets.day_id
+        AND prior.priority_level = tickets.priority_level
+        AND prior.id <= tickets.id
+    )
+    WHERE display_number IS NULL
+  `);
+  db.exec(`
+    UPDATE tickets
+    SET original_expected_slot_id = expected_slot_id,
+        original_expected_slot_time = expected_slot_time
+    WHERE original_expected_slot_id IS NULL
+  `);
 
   // 初期設定値
   db.prepare(`
@@ -145,7 +192,11 @@ export function initDatabase() {
     INSERT OR IGNORE INTO settings (key, value) VALUES ('max_wait_minutes', '30')
   `).run();
   db.prepare(`
-    INSERT OR IGNORE INTO settings (key, value) VALUES ('meeting_lead_minutes', '5')
+    INSERT OR IGNORE INTO settings (key, value) VALUES ('meeting_lead_minutes', '7')
+  `).run();
+  db.prepare(`
+    UPDATE settings SET value = '7'
+    WHERE key = 'meeting_lead_minutes' AND value = '5'
   `).run();
 
   // マイグレーション: is_maintenance カラムが存在しなければ追加
@@ -195,7 +246,7 @@ export function setMaxWaitMinutes(minutes: number): void {
 
 export function getMeetingLeadMinutes(): number {
   const row = db.prepare("SELECT value FROM settings WHERE key = 'meeting_lead_minutes'").get() as any;
-  return row ? parseInt(row.value, 10) : 5;
+  return row ? parseInt(row.value, 10) : 7;
 }
 
 export function setMeetingLeadMinutes(minutes: number): void {

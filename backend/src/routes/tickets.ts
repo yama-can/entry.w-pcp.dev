@@ -1,9 +1,41 @@
 import { Router, type Request, type Response } from 'express';
-import { db, getActiveDay } from '../db.ts';
+import { db, getActiveDay, getMeetingLeadMinutes } from '../db.ts';
 import { broadcastUpdate } from '../sse.ts';
-import { getIssueWaitStatus, getBufferSummary } from '../services/waitStatus.ts';
+import { requireAdminAuth } from '../auth.ts';
+import { getIssueWaitStatus, getBufferSummary, isLateTicket, recomputeLatestTicketTimes } from '../services/waitStatus.ts';
 
 export const ticketsRouter = Router();
+
+function formatTicketNumber(ticketNumber: number) {
+  return String(ticketNumber).padStart(3, '0');
+}
+
+function getTicketCode(ticketNumber: number, priorityLevel = 0) {
+  const prefix = priorityLevel === 2 ? 'I' : priorityLevel === 1 ? 'P' : '';
+  return `${prefix}${formatTicketNumber(ticketNumber)}`;
+}
+
+function getNextDisplayNumber(dayId: number, priorityLevel: number) {
+  const row = db.prepare(`
+    SELECT MAX(display_number) AS max_num
+    FROM tickets
+    WHERE day_id = ? AND priority_level = ?
+  `).get(dayId, priorityLevel) as any;
+  return (row?.max_num || 0) + 1;
+}
+
+function getMeetingTime(slotTime: string | null): string | null {
+  if (!slotTime) return null;
+  const parts = slotTime.split(':').map(Number);
+  const hours = parts[0];
+  const minutes = parts[1];
+  if (hours === undefined || minutes === undefined || !Number.isFinite(hours) || !Number.isFinite(minutes)) {
+    return null;
+  }
+  const totalMinutes = hours * 60 + minutes - getMeetingLeadMinutes();
+  const normalized = (totalMinutes + 24 * 60) % (24 * 60);
+  return `${String(Math.floor(normalized / 60)).padStart(2, '0')}:${String(normalized % 60).padStart(2, '0')}`;
+}
 
 // ==========================================
 // 発券状況・待ち時間確認 API
@@ -37,6 +69,7 @@ ticketsRouter.post('/api/issue', (req: Request, res: Response) => {
     }
 
     const activeDay = req.body.day ? parseInt(String(req.body.day), 10) : getActiveDay();
+    recomputeLatestTicketTimes(activeDay);
 
     // 違法予約の遮断（満席・待ち時間オーバー・スロット未生成等）
     const waitStatus = getIssueWaitStatus(activeDay, simulatedTime);
@@ -58,6 +91,7 @@ ticketsRouter.post('/api/issue', (req: Request, res: Response) => {
         SELECT MAX(ticket_number) AS max_num FROM tickets WHERE day_id = ?
       `).get(activeDay) as any;
       const nextNum = (maxRow?.max_num || 0) + 1;
+      const displayNumber = getNextDisplayNumber(activeDay, 0);
 
       // 予測体験枠（目安時刻）の算定
       // ★ 調整枠（is_buffer = 1）およびメンテナンス枠（is_maintenance = 1）は発券予約の目安枠からは除外
@@ -70,7 +104,7 @@ ticketsRouter.post('/api/issue', (req: Request, res: Response) => {
           s.order_idx
         FROM seat_reservations r
         JOIN slots s ON r.slot_id = s.id
-        WHERE s.day_id = ? AND s.is_closed = 0 AND s.is_buffer = 0 AND s.is_maintenance = 0 AND (r.is_assigned = 0 OR r.status = 'empty')
+        WHERE s.day_id = ? AND s.is_closed = 0 AND s.is_buffer = 0 AND s.is_maintenance = 0 AND r.is_maintenance = 0 AND (r.is_assigned = 0 OR r.status = 'empty')
         ORDER BY s.order_idx ASC, r.seat_no ASC
       `).all(activeDay) as any[];
 
@@ -87,9 +121,17 @@ ticketsRouter.post('/api/issue', (req: Request, res: Response) => {
       const expectedLane = expectedSeat ? expectedSeat.lane : null;
 
       db.prepare(`
-        INSERT INTO tickets (day_id, ticket_number, game_id, status, expected_slot_id, expected_slot_time)
-        VALUES (?, ?, ?, 'issued', ?, ?)
-      `).run(activeDay, nextNum, game.id, expectedSlotId, expectedSlotTime);
+        INSERT INTO tickets (
+          day_id, ticket_number, display_number, game_id, status,
+          priority_level,
+          expected_slot_id, expected_slot_time,
+          original_expected_slot_id, original_expected_slot_time
+        )
+        VALUES (?, ?, ?, ?, 'issued', 0, ?, ?, ?, ?)
+      `).run(
+        activeDay, nextNum, displayNumber, game.id, expectedSlotId, expectedSlotTime,
+        expectedSlotId, expectedSlotTime
+      );
 
       const waitRow = db.prepare(`
         SELECT COUNT(*) AS cnt FROM tickets
@@ -97,15 +139,21 @@ ticketsRouter.post('/api/issue', (req: Request, res: Response) => {
       `).get(activeDay) as any;
 
       return {
+        id: Number((db.prepare('SELECT last_insert_rowid() AS id').get() as any).id),
         ticket_number: nextNum,
-        ticket_code: String(nextNum),
-        display_ticket_code: `No. ${nextNum}`,
+        display_number: displayNumber,
+        priority_level: 0,
+        ticket_code: getTicketCode(displayNumber),
+        display_ticket_code: getTicketCode(displayNumber),
         game_id: game.id,
         game_name: game.name,
         waiting_count: waitRow?.cnt || 1,
         expected_slot_id: expectedSlotId,
         expected_slot_time: expectedSlotTime,
+        original_expected_slot_id: expectedSlotId,
+        original_expected_slot_time: expectedSlotTime,
         expected_lane: expectedLane,
+        meeting_time: getMeetingTime(expectedSlotTime),
         day_id: activeDay,
         created_at: new Date().toISOString(),
       };
@@ -115,6 +163,66 @@ ticketsRouter.post('/api/issue', (req: Request, res: Response) => {
 
     broadcastUpdate({ reason: 'ticket_issued', ticket: issued, dayId: activeDay });
     res.json({ success: true, ticket: issued });
+  } catch (error: any) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+ticketsRouter.post('/api/admin/issue-priority', requireAdminAuth, (req: Request, res: Response) => {
+  try {
+    const { gameId, priorityLevel } = req.body;
+    const level = Number(priorityLevel);
+    if (!gameId || ![1, 2].includes(level)) {
+      res.status(400).json({ success: false, message: 'gameId and priorityLevel (1 or 2) are required' });
+      return;
+    }
+    const game = db.prepare('SELECT * FROM games WHERE id = ?').get(gameId) as any;
+    if (!game) {
+      res.status(404).json({ success: false, message: 'ゲームが見つかりません' });
+      return;
+    }
+    const dayId = req.body.day ? parseInt(String(req.body.day), 10) : getActiveDay();
+    const ticket = db.transaction(() => {
+      const maxRow = db.prepare('SELECT MAX(ticket_number) AS max_num FROM tickets WHERE day_id = ?').get(dayId) as any;
+      const ticketNumber = (maxRow?.max_num || 0) + 1;
+      const displayNumber = getNextDisplayNumber(dayId, level);
+      const seat = db.prepare(`
+        SELECT r.id AS reservation_id, s.id AS slot_id, s.slot_time, s.lane
+        FROM seat_reservations r JOIN slots s ON s.id = r.slot_id
+        WHERE s.day_id = ? AND s.is_closed = 0 AND s.is_buffer = 0
+          AND s.is_maintenance = 0 AND r.is_maintenance = 0
+          AND (r.is_assigned = 0 OR r.status = 'empty')
+        ORDER BY s.order_idx ASC, r.seat_no ASC LIMIT 1
+      `).get(dayId) as any;
+      db.prepare(`
+        INSERT INTO tickets (
+          day_id, ticket_number, display_number, game_id, status, priority_level,
+          expected_slot_id, expected_slot_time,
+          original_expected_slot_id, original_expected_slot_time
+        ) VALUES (?, ?, ?, ?, 'issued', ?, ?, ?, ?, ?)
+      `).run(
+        dayId, ticketNumber, displayNumber, game.id, level,
+        seat?.slot_id ?? null, seat?.slot_time ?? null,
+        seat?.slot_id ?? null, seat?.slot_time ?? null
+      );
+      return {
+        id: Number((db.prepare('SELECT last_insert_rowid() AS id').get() as any).id),
+        ticket_number: ticketNumber,
+        ticket_code: getTicketCode(displayNumber, level),
+        display_ticket_code: getTicketCode(displayNumber, level),
+        display_number: displayNumber,
+        game_id: game.id,
+        game_name: game.name,
+        priority_level: level,
+        expected_slot_id: seat?.slot_id ?? null,
+        expected_slot_time: seat?.slot_time ?? null,
+        expected_lane: seat?.lane ?? null,
+        meeting_time: getMeetingTime(seat?.slot_time ?? null),
+        day_id: dayId,
+      };
+    })();
+    broadcastUpdate({ reason: 'priority_ticket_issued', ticket, dayId });
+    res.json({ success: true, ticket });
   } catch (error: any) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -248,12 +356,17 @@ ticketsRouter.get('/api/checkin/list', (req: Request, res: Response) => {
         t.id,
         t.day_id,
         t.ticket_number,
+        t.display_number,
         t.game_id,
+        t.priority_level,
+        t.is_late,
         t.status,
         t.assigned_slot_id,
         t.assigned_seat_no,
         t.expected_slot_id,
         t.expected_slot_time,
+        t.original_expected_slot_id,
+        t.original_expected_slot_time,
         s.lane AS expected_lane,
         s.is_closed AS expected_slot_is_closed,
         t.created_at,
@@ -270,18 +383,11 @@ ticketsRouter.get('/api/checkin/list', (req: Request, res: Response) => {
     const tickets = rawTickets.map((t) => {
       let isDelayed = false;
       if (t.status !== 'assigned') {
-        if (t.expected_slot_is_closed === 1) {
-          isDelayed = true;
-        } else if (t.expected_slot_time) {
-          const [eH, eM] = t.expected_slot_time.split(':').map(Number);
-          const expMins = eH * 60 + eM;
-          if (nowMins > expMins) {
-            isDelayed = true;
-          }
-        }
+        isDelayed = isLateTicket(t);
       }
       return {
         ...t,
+        display_ticket_code: getTicketCode(t.display_number ?? t.ticket_number, t.priority_level),
         is_delayed: isDelayed,
       };
     });
@@ -306,8 +412,22 @@ ticketsRouter.post('/api/checkin/mark', (req: Request, res: Response) => {
     if (ticketId) {
       targetTicket = db.prepare('SELECT * FROM tickets WHERE id = ?').get(ticketId);
     } else if (ticketNumber) {
-      const num = parseInt(String(ticketNumber).replace(/[^0-9]/g, ''), 10);
-      targetTicket = db.prepare('SELECT * FROM tickets WHERE day_id = ? AND ticket_number = ?').get(activeDay, num);
+      const raw = String(ticketNumber).trim();
+      const num = parseInt(raw.replace(/[^0-9]/g, ''), 10);
+      const prefix = raw.match(/^[IP]/i)?.[0].toUpperCase() || '';
+      targetTicket = prefix
+        ? db.prepare('SELECT * FROM tickets WHERE day_id = ? AND display_number = ? AND priority_level = ?')
+          .get(activeDay, num, prefix === 'I' ? 2 : 1)
+        : db.prepare('SELECT * FROM tickets WHERE day_id = ? AND display_number = ? AND priority_level = 0')
+          .get(activeDay, num);
+      if (!targetTicket && !prefix) {
+        targetTicket = db.prepare(`
+          SELECT * FROM tickets
+          WHERE day_id = ? AND ticket_number = ?
+          ORDER BY priority_level ASC
+          LIMIT 1
+        `).get(activeDay, num);
+      }
     }
 
     if (!targetTicket) {
@@ -337,18 +457,9 @@ ticketsRouter.post('/api/checkin/mark', (req: Request, res: Response) => {
       dayId: activeDay,
     });
 
-    // 遅延判定
-    let isDelayed = false;
-    if (targetTicket.expected_slot_id) {
-      const expSlot = db.prepare('SELECT * FROM slots WHERE id = ?').get(targetTicket.expected_slot_id) as any;
-      if (expSlot && expSlot.is_closed === 1) isDelayed = true;
-    }
-    if (!isDelayed && targetTicket.expected_slot_time) {
-      const now = new Date();
-      const nowM = now.getHours() * 60 + now.getMinutes();
-      const [eH, eM] = targetTicket.expected_slot_time.split(':').map(Number);
-      if (nowM > eH * 60 + eM) isDelayed = true;
-    }
+    const now = new Date();
+    const nowMins = now.getHours() * 60 + now.getMinutes();
+    const isDelayed = isLateTicket(targetTicket);
 
     const bufferSummary = getBufferSummary(activeDay);
 
@@ -389,6 +500,7 @@ ticketsRouter.post('/api/checkin/by-ticket', (req: Request, res: Response) => {
 
     const activeDay = getActiveDay();
     const numMatch = raw.match(/\d+/);
+    const prefix = raw.match(/^[IP]/i)?.[0].toUpperCase() || '';
     let targetTicket: any = null;
 
     if (numMatch) {
@@ -397,8 +509,20 @@ ticketsRouter.post('/api/checkin/by-ticket', (req: Request, res: Response) => {
         SELECT t.*, g.name AS game_name 
         FROM tickets t 
         LEFT JOIN games g ON t.game_id = g.id 
-        WHERE t.day_id = ? AND t.ticket_number = ?
-      `).get(activeDay, num);
+        WHERE t.day_id = ?
+          AND t.display_number = ?
+          AND t.priority_level = ?
+      `).get(activeDay, num, prefix === 'I' ? 2 : prefix === 'P' ? 1 : 0);
+      if (!targetTicket && !prefix) {
+        targetTicket = db.prepare(`
+          SELECT t.*, g.name AS game_name
+          FROM tickets t
+          LEFT JOIN games g ON t.game_id = g.id
+          WHERE t.day_id = ? AND t.ticket_number = ?
+          ORDER BY t.priority_level ASC
+          LIMIT 1
+        `).get(activeDay, num);
+      }
     }
 
     if (!targetTicket) {
@@ -453,18 +577,9 @@ ticketsRouter.post('/api/checkin/by-ticket', (req: Request, res: Response) => {
       dayId: activeDay,
     });
 
-    // 遅延判定
-    let isDelayed = false;
-    if (targetTicket.expected_slot_id) {
-      const expSlot = db.prepare('SELECT * FROM slots WHERE id = ?').get(targetTicket.expected_slot_id) as any;
-      if (expSlot && expSlot.is_closed === 1) isDelayed = true;
-    }
-    if (!isDelayed && targetTicket.expected_slot_time) {
-      const now = new Date();
-      const nowM = now.getHours() * 60 + now.getMinutes();
-      const [eH, eM] = targetTicket.expected_slot_time.split(':').map(Number);
-      if (nowM > eH * 60 + eM) isDelayed = true;
-    }
+    const now = new Date();
+    const nowMins = now.getHours() * 60 + now.getMinutes();
+    const isDelayed = isLateTicket(targetTicket);
 
     const bufferSummary = getBufferSummary(activeDay);
 
@@ -505,8 +620,22 @@ ticketsRouter.post('/api/checkin/cancel', (req: Request, res: Response) => {
     if (ticketId) {
       targetTicket = db.prepare('SELECT * FROM tickets WHERE id = ?').get(ticketId);
     } else if (ticketNumber) {
-      const num = parseInt(String(ticketNumber).replace(/[^0-9]/g, ''), 10);
-      targetTicket = db.prepare('SELECT * FROM tickets WHERE day_id = ? AND ticket_number = ?').get(activeDay, num);
+      const raw = String(ticketNumber).trim();
+      const num = parseInt(raw.replace(/[^0-9]/g, ''), 10);
+      const prefix = raw.match(/^[IP]/i)?.[0].toUpperCase() || '';
+      targetTicket = prefix
+        ? db.prepare('SELECT * FROM tickets WHERE day_id = ? AND display_number = ? AND priority_level = ?')
+          .get(activeDay, num, prefix === 'I' ? 2 : 1)
+        : db.prepare('SELECT * FROM tickets WHERE day_id = ? AND display_number = ? AND priority_level = 0')
+          .get(activeDay, num);
+      if (!targetTicket && !prefix) {
+        targetTicket = db.prepare(`
+          SELECT * FROM tickets
+          WHERE day_id = ? AND ticket_number = ?
+          ORDER BY priority_level ASC
+          LIMIT 1
+        `).get(activeDay, num);
+      }
     }
 
     if (!targetTicket) {

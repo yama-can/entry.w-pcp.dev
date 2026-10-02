@@ -46,6 +46,7 @@ export const SchedulerTab: React.FC<SchedulerTabProps> = ({
   const [autoFollow, setAutoFollow] = useState<boolean>(true);
   // 現在フォーカスしているイベントのインデックス
   const [focusedEventIndex, setFocusedEventIndex] = useState<number>(0);
+  const [customShiftMinutes, setCustomShiftMinutes] = useState("");
 
   // ★ 手動「完了」タスクのステート管理（localStorage永続化）
   const [completedTaskIds, setCompletedTaskIds] = useState<{ [id: string]: boolean }>(() => {
@@ -674,6 +675,51 @@ export const SchedulerTab: React.FC<SchedulerTabProps> = ({
                   +5分 遅延
                 </button>
               </div>
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const value = Number(customShiftMinutes);
+                  if (!Number.isInteger(value) || value === 0) {
+                    alert("0以外の整数で入力してください");
+                    return;
+                  }
+                  triggerShift(value);
+                  setCustomShiftMinutes("");
+                }}
+                style={{
+                  display: "flex",
+                  alignItems: "end",
+                  gap: "8px",
+                  marginTop: "10px",
+                }}
+              >
+                <label style={{ flex: 1, fontSize: "0.78rem", color: "#cbd5e1" }}>
+                  任意のディレイ（分）
+                  <input
+                    type="number"
+                    step={1}
+                    value={customShiftMinutes}
+                    onChange={(event) => setCustomShiftMinutes(event.target.value)}
+                    placeholder="例: 8 / -2"
+                    className="form-input tabular font-mono"
+                    style={{ marginTop: "4px" }}
+                  />
+                </label>
+                <button
+                  type="submit"
+                  style={{
+                    background: "#475569",
+                    color: "#fff",
+                    border: "1px solid #64748b",
+                    padding: "8px 14px",
+                    borderRadius: "6px",
+                    fontWeight: "700",
+                    cursor: "pointer",
+                  }}
+                >
+                  適用
+                </button>
+              </form>
             </div>
           ) : (
             <div style={{ fontSize: "0.85rem", color: "#64748b" }}>調整可能な枠がありません</div>

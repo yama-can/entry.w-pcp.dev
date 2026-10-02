@@ -1,7 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import { db, getActiveDay, getMeetingLeadMinutes } from '../db.ts';
 import { broadcastUpdate } from '../sse.ts';
-import { getBufferSummary } from '../services/waitStatus.ts';
+import { confirmLateTickets, getBufferSummary, recomputeLatestTicketTimes } from '../services/waitStatus.ts';
 
 export const assignmentRouter = Router();
 
@@ -12,6 +12,9 @@ assignmentRouter.get('/api/assignment/status', (req: Request, res: Response) => 
   try {
     const activeDay = getActiveDay();
     const dayId = req.query.day ? parseInt(String(req.query.day), 10) : activeDay;
+    recomputeLatestTicketTimes(dayId);
+    confirmLateTickets(dayId);
+    recomputeLatestTicketTimes(dayId);
 
     const rows = db.prepare(`
       SELECT 
@@ -24,26 +27,32 @@ assignmentRouter.get('/api/assignment/status', (req: Request, res: Response) => 
         s.play_duration,
         s.cleanup_duration,
         s.is_buffer,
-        s.is_maintenance,
+        s.is_maintenance AS slot_is_maintenance,
         s.is_closed,
         r.id AS reservation_id,
         r.seat_no,
         r.ticket_code,
         r.ticket_number,
+        t.display_number,
         CASE 
-          WHEN r.ticket_number IS NOT NULL THEN 'No. ' || r.ticket_number
+          WHEN r.ticket_number IS NOT NULL AND r.priority_level = 2 THEN 'I' || printf('%03d', COALESCE(t.display_number, r.ticket_number))
+          WHEN r.ticket_number IS NOT NULL AND r.priority_level = 1 THEN 'P' || printf('%03d', COALESCE(t.display_number, r.ticket_number))
+          WHEN r.ticket_number IS NOT NULL THEN printf('No. %03d', COALESCE(t.display_number, r.ticket_number))
           WHEN r.assigned_ticket_code IS NOT NULL THEN r.assigned_ticket_code
           ELSE r.ticket_code
         END AS display_ticket_code,
         r.note,
         r.status,
         r.is_assigned,
+        r.is_maintenance,
+        r.priority_level,
         r.game_id,
         g.name AS game_name,
         g.command AS game_command
       FROM slots s
       LEFT JOIN seat_reservations r ON s.id = r.slot_id
       LEFT JOIN games g ON r.game_id = g.id
+      LEFT JOIN tickets t ON t.day_id = s.day_id AND t.ticket_number = r.ticket_number
       WHERE s.day_id = ?
       ORDER BY s.order_idx ASC, r.seat_no ASC
     `).all(dayId) as any[];
@@ -61,7 +70,7 @@ assignmentRouter.get('/api/assignment/status', (req: Request, res: Response) => 
           play_duration: row.play_duration || 5,
           cleanup_duration: row.cleanup_duration ?? 2,
           is_buffer: row.is_buffer === 1,
-          is_maintenance: row.is_maintenance === 1,
+          is_maintenance: row.slot_is_maintenance === 1,
           is_closed: row.is_closed === 1,
           seats: [],
           plannedSeats: [],
@@ -78,6 +87,7 @@ assignmentRouter.get('/api/assignment/status', (req: Request, res: Response) => 
           note: row.note,
           status: row.status,
           is_assigned: row.is_assigned === 1,
+          is_maintenance: row.is_maintenance === 1,
           game_id: row.game_id,
           game_name: row.game_name,
           game_command: row.game_command,
@@ -130,11 +140,9 @@ assignmentRouter.get('/api/assignment/status', (req: Request, res: Response) => 
     // 優先度1: 当該スロットのオンタイム予定客（expected_slot_id === slot.id）
     // 優先度2: 遅延者（予定枠が閉鎖済み、または予定時刻がスロット時刻より前）
     // 優先度3: 未来枠からの前倒し客（手前の空席に前詰め）
-    // ※調整枠（is_buffer = 1）は遅延者を優先吸収、早着客も挿入可
+    // ※調整枠（is_buffer = 1）は遅刻者を優先吸収する。
+    //   前倒しが許可された早着者も調整枠へ割り当てる。
     // ※メンテナンス枠（is_maintenance = 1）は客を一切割り当てない
-    const closedSlotIds = new Set(
-      slotList.filter((s: any) => s.is_closed).map((s: any) => s.id)
-    );
     const assignedTicketIds = new Set<number>();
 
     for (const slot of openSlots) {
@@ -144,7 +152,7 @@ assignmentRouter.get('/api/assignment/status', (req: Request, res: Response) => 
         continue;
       }
 
-      const emptySeats = slot.seats.filter((s: any) => !s.is_assigned && s.status === 'empty');
+      const emptySeats = slot.seats.filter((s: any) => !s.is_assigned && s.status === 'empty' && !s.is_maintenance);
       if (emptySeats.length === 0) continue;
 
       const [sH, sM] = slot.slot_time.split(':').map(Number);
@@ -156,41 +164,44 @@ assignmentRouter.get('/api/assignment/status', (req: Request, res: Response) => 
           let score = 99;
           let type: 'on_time' | 'delayed' | 'advanced' | 'buffer' | 'fill' = 'fill';
 
-          const isClosedOriginal = t.expected_slot_id && closedSlotIds.has(t.expected_slot_id);
           let expMins: number | null = null;
           if (t.expected_slot_time) {
             const [eH, eM] = t.expected_slot_time.split(':').map(Number);
             expMins = eH * 60 + eM;
           }
 
-          const isDelayed = isClosedOriginal || (expMins !== null && expMins < slotMins);
-          const isCurrentSlot = t.expected_slot_id === slot.id || (expMins !== null && expMins === slotMins);
-          const isAdvance = expMins !== null && expMins > slotMins;
+          const isDelayed = t.is_late === 1;
+          const isCurrentSlot = t.is_late !== 1 && (t.expected_slot_id === slot.id || (expMins !== null && expMins === slotMins));
+          const earlyAcceptanceLimit = slotMins + (slot.duration_minutes || 0);
+          const isAcceptedEarly = expMins !== null
+            && expMins > slotMins
+            && expMins <= earlyAcceptanceLimit;
 
-          if (slot.is_buffer) {
+          if (t.priority_level === 2 && !isDelayed && !slot.is_buffer) {
+            score = 0;
+            type = 'on_time';
+          } else if (!slot.is_buffer && isCurrentSlot) {
+            score = 1;
+            type = 'on_time';
+          } else if (slot.is_buffer) {
             if (isDelayed) {
               score = 2;
-              type = 'buffer';
-            } else if (isAdvance) {
+              type = 'delayed';
+            } else if (isAcceptedEarly) {
               score = 3;
               type = 'advanced';
             } else {
-              score = 4;
-              type = 'fill';
+              score = 99;
             }
           } else {
-            if (isCurrentSlot) {
-              score = 1;
-              type = 'on_time';
-            } else if (isDelayed) {
+            if (isDelayed) {
               score = 2;
               type = 'delayed';
-            } else if (isAdvance) {
+            } else if (isAcceptedEarly) {
               score = 3;
               type = 'advanced';
             } else {
-              score = 4;
-              type = 'fill';
+              score = 99;
             }
           }
 
@@ -199,7 +210,7 @@ assignmentRouter.get('/api/assignment/status', (req: Request, res: Response) => 
         .filter((c) => c.score < 99)
         .sort((a, b) => {
           if (a.score !== b.score) return a.score - b.score;
-          // 遅刻者（score === 2）または早着者（score === 3）同士の場合、早く到着した順（checked_in_at 昇順）にする
+          // 同じ優先度の候補は早く到着した順（checked_in_at 昇順）にする
           if ((a.score === 2 || a.score === 3) && a.score === b.score) {
             const timeA = a.ticket.checked_in_at ? new Date(a.ticket.checked_in_at).getTime() : 0;
             const timeB = b.ticket.checked_in_at ? new Date(b.ticket.checked_in_at).getTime() : 0;
@@ -221,12 +232,19 @@ assignmentRouter.get('/api/assignment/status', (req: Request, res: Response) => 
           seatNo: seat.seat_no,
           ticketId: t.id,
           ticketNumber: t.ticket_number,
-          displayTicketNumber: `No. ${t.ticket_number}`,
+          displayTicketNumber: t.priority_level === 2
+            ? `I${String(t.display_number ?? t.ticket_number).padStart(3, '0')}`
+            : t.priority_level === 1
+              ? `P${String(t.display_number ?? t.ticket_number).padStart(3, '0')}`
+              : `No. ${String(t.display_number ?? t.ticket_number).padStart(3, '0')}`,
           gameName: t.game_name,
           gameId: t.game_id,
           expectedSlotId: t.expected_slot_id,
           expectedSlotTime: t.expected_slot_time,
+          originalExpectedSlotId: t.original_expected_slot_id,
+          originalExpectedSlotTime: t.original_expected_slot_time,
           assignmentType: type,
+          priorityLevel: t.priority_level || 0,
         });
       }
     }
@@ -270,22 +288,41 @@ assignmentRouter.post('/api/assignment/fill-slot', (req: Request, res: Response)
     }
 
     if (targetSlot.is_maintenance === 1) {
-      res.status(400).json({ success: false, message: 'このスロットはメンテナンス枠のため割当できません' });
+      db.prepare('UPDATE slots SET is_closed = 1 WHERE id = ?').run(slotId);
+      broadcastUpdate({
+        reason: 'maintenance_slot_closed',
+        slotId: targetSlot.id,
+        dayId: activeDay,
+      });
+      res.json({
+        success: true,
+        assignedCount: 0,
+        message: `【${targetSlot.lane}組 ${targetSlot.slot_time}】をメンテナンス完了にしました`,
+        data: { slot: targetSlot, seats: [], assignedCount: 0 },
+      });
       return;
     }
 
     const fillTx = db.transaction(() => {
       const emptySeats = db.prepare(`
         SELECT * FROM seat_reservations
-        WHERE slot_id = ? AND (is_assigned = 0 OR status = 'empty')
+        WHERE slot_id = ? AND is_maintenance = 0 AND (is_assigned = 0 OR status = 'empty')
         ORDER BY seat_no ASC
       `).all(slotId) as any[];
 
       const [sH, sM] = targetSlot.slot_time.split(':').map(Number);
       const slotMins = sH * 60 + sM;
 
-      const closedSlots = db.prepare('SELECT id FROM slots WHERE day_id = ? AND is_closed = 1').all(activeDay) as any[];
-      const closedSlotIds = new Set(closedSlots.map((s) => s.id));
+      // 枠を確定した時点で、最新の定刻がこの枠だった未到着者を遅刻確定する。
+      // 本来時刻と最新時刻が同じ場合も、この対象に含める。
+      db.prepare(`
+        UPDATE tickets
+        SET is_late = 1
+        WHERE day_id = ? AND status = 'issued'
+          AND assigned_slot_id IS NULL
+          AND is_late = 0
+          AND expected_slot_id = ?
+      `).run(activeDay, slotId);
 
       const unassignedTickets = db.prepare(`
         SELECT * FROM tickets
@@ -296,26 +333,30 @@ assignmentRouter.post('/api/assignment/fill-slot', (req: Request, res: Response)
       const candidates = unassignedTickets
         .map((t) => {
           let score = 99;
-          const isClosedOriginal = t.expected_slot_id && closedSlotIds.has(t.expected_slot_id);
           let expMins: number | null = null;
           if (t.expected_slot_time) {
             const [eH, eM] = t.expected_slot_time.split(':').map(Number);
             expMins = eH * 60 + eM;
           }
 
-          const isDelayed = isClosedOriginal || (expMins !== null && expMins < slotMins);
-          const isCurrentSlot = t.expected_slot_id === slotId || (expMins !== null && expMins === slotMins);
-          const isAdvance = expMins !== null && expMins > slotMins;
+          const isDelayed = t.is_late === 1;
+          const isCurrentSlot = t.is_late !== 1 && (t.expected_slot_id === slotId || (expMins !== null && expMins === slotMins));
+          const earlyAcceptanceLimit = slotMins + (targetSlot.duration_minutes || 0);
+          const isAcceptedEarly = expMins !== null
+            && expMins > slotMins
+            && expMins <= earlyAcceptanceLimit;
 
-          if (targetSlot.is_buffer === 1) {
+          if (t.priority_level === 2 && !isDelayed && targetSlot.is_buffer === 0) {
+            score = 0;
+          } else if (targetSlot.is_buffer === 1) {
             if (isDelayed) score = 2;
-            else if (isAdvance) score = 3;
-            else score = 4;
+            else if (isAcceptedEarly) score = 3;
+            else score = 99;
           } else {
             if (isCurrentSlot) score = 1;
             else if (isDelayed) score = 2;
-            else if (isAdvance) score = 3;
-            else score = 4;
+            else if (isAcceptedEarly) score = 3;
+            else score = 99;
           }
 
           return { ticket: t, score };
@@ -323,7 +364,7 @@ assignmentRouter.post('/api/assignment/fill-slot', (req: Request, res: Response)
         .filter((c) => c.score < 99)
         .sort((a, b) => {
           if (a.score !== b.score) return a.score - b.score;
-          // 遅刻者（score === 2）または早着者（score === 3）同士の場合、早く到着した順（checked_in_at 昇順）にする
+          // 同じ優先度の候補は早く到着した順（checked_in_at 昇順）にする
           if ((a.score === 2 || a.score === 3) && a.score === b.score) {
             const timeA = a.ticket.checked_in_at ? new Date(a.ticket.checked_in_at).getTime() : 0;
             const timeB = b.ticket.checked_in_at ? new Date(b.ticket.checked_in_at).getTime() : 0;
@@ -338,7 +379,7 @@ assignmentRouter.post('/api/assignment/fill-slot', (req: Request, res: Response)
 
       const updateSeat = db.prepare(`
         UPDATE seat_reservations
-        SET status = 'checked_in', is_assigned = 1, ticket_number = ?, game_id = ?, updated_at = CURRENT_TIMESTAMP
+        SET status = 'checked_in', is_assigned = 1, ticket_number = ?, priority_level = ?, game_id = ?, updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
       `);
 
@@ -351,7 +392,7 @@ assignmentRouter.post('/api/assignment/fill-slot', (req: Request, res: Response)
       for (let i = 0; i < waitingTickets.length; i++) {
         const t = waitingTickets[i];
         const s = emptySeats[i];
-        updateSeat.run(t.ticket_number, t.game_id, s.id);
+        updateSeat.run(t.ticket_number, t.priority_level || 0, t.game_id, s.id);
         updateTicket.run(slotId, s.seat_no, t.id);
       }
 
@@ -572,7 +613,7 @@ assignmentRouter.get('/api/seat-status', (req: Request, res: Response) => {
       FROM seat_reservations r
       JOIN slots s ON r.slot_id = s.id
       LEFT JOIN games g ON r.game_id = g.id
-      WHERE s.day_id = ? AND s.lane = ? AND r.seat_no = ? AND (s.is_closed = 1 OR r.is_assigned = 1) AND r.status != 'empty'
+      WHERE s.day_id = ? AND s.lane = ? AND r.seat_no = ? AND r.is_maintenance = 0 AND (s.is_closed = 1 OR r.is_assigned = 1) AND r.status != 'empty'
       ORDER BY s.order_idx DESC
       LIMIT 1
     `).get(activeDay, lane, seat) as any;
@@ -610,4 +651,3 @@ assignmentRouter.get('/api/seat-status', (req: Request, res: Response) => {
     res.status(500).json({ success: false, message: error.message });
   }
 });
-

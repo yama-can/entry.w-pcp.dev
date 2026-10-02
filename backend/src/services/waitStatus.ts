@@ -21,11 +21,113 @@ export interface BufferSummary {
   canAccommodate: boolean;
 }
 
+export function recomputeLatestTicketTimes(dayId: number) {
+  // 調整枠も実際に案内できる席として、最新の定刻の詰め込み対象に含める。
+  const seats = db.prepare(`
+    SELECT r.slot_id, s.slot_time
+    FROM seat_reservations r
+    JOIN slots s ON s.id = r.slot_id
+    WHERE s.day_id = ? AND s.is_closed = 0
+      AND s.is_maintenance = 0 AND r.is_maintenance = 0
+    ORDER BY s.order_idx ASC, r.seat_no ASC
+  `).all(dayId) as any[];
+  const tickets = db.prepare(`
+    SELECT id, status, expected_slot_id, expected_slot_time
+    FROM tickets
+    WHERE day_id = ? AND status IN ('issued', 'checked_in')
+      AND is_late = 0
+      AND assigned_slot_id IS NULL
+    ORDER BY priority_level DESC, ticket_number ASC
+  `).all(dayId) as any[];
+  const ticketsToRecompute = tickets.filter((ticket) => {
+    if (ticket.status !== 'checked_in' || !ticket.expected_slot_time) return true;
+    return !isLateTicket(ticket);
+  });
+  const update = db.prepare('UPDATE tickets SET expected_slot_id = ?, expected_slot_time = ? WHERE id = ?');
+  for (let i = 0; i < ticketsToRecompute.length; i++) {
+    const seat = seats[i] || null;
+    update.run(seat?.slot_id ?? null, seat?.slot_time ?? null, ticketsToRecompute[i].id);
+  }
+}
+
+export function isScheduleAdjusted(ticket: any): boolean {
+  return ticket.original_expected_slot_id !== ticket.expected_slot_id
+    || ticket.original_expected_slot_time !== ticket.expected_slot_time;
+}
+
+/**
+ * 席メンテナンスによって予定枠に入れず後続枠へ回った状態かを判定する。
+ * 通常席に空きが残っている場合は、メンテナンスが遅延原因とはみなさない。
+ */
+export function isMaintenanceCausedDelay(ticket: any, nowMins: number): boolean {
+  if (!ticket.expected_slot_id) return false;
+
+  const slot = db.prepare(`
+    SELECT s.slot_time, s.is_closed,
+      SUM(CASE WHEN r.is_maintenance = 1 THEN 1 ELSE 0 END) AS maintenance_count,
+      SUM(CASE WHEN r.is_maintenance = 0
+        AND (r.is_assigned = 0 OR r.status = 'empty') THEN 1 ELSE 0 END) AS empty_regular_count
+    FROM slots s
+    LEFT JOIN seat_reservations r ON r.slot_id = s.id
+    WHERE s.id = ?
+    GROUP BY s.id
+  `).get(ticket.expected_slot_id) as any;
+
+  if (!slot || slot.maintenance_count < 1 || slot.empty_regular_count > 0) {
+    return false;
+  }
+
+  const [slotHour = 0, slotMinute = 0] = String(slot.slot_time).split(':').map(Number);
+  const slotMins = slotHour * 60 + slotMinute;
+  return slot.is_closed === 1 || nowMins > slotMins;
+}
+
+export function isLateTicket(ticket: any): boolean {
+  if (ticket.is_late === 1) return true;
+  if (ticket.status === 'checked_in') return false;
+  if (isMaintenanceCausedDelay(ticket, 0)) return false;
+
+  const latestSlot = ticket.expected_slot_id
+    ? db.prepare('SELECT slot_time, is_closed FROM slots WHERE id = ?').get(ticket.expected_slot_id) as any
+    : null;
+  const latestTime = latestSlot?.slot_time || ticket.expected_slot_time;
+  const originalSlot = ticket.original_expected_slot_id
+    ? db.prepare('SELECT slot_time, is_closed FROM slots WHERE id = ?').get(ticket.original_expected_slot_id) as any
+    : null;
+  const originalTime = originalSlot?.slot_time || ticket.original_expected_slot_time;
+  const toMinutes = (value: unknown) => {
+    if (!value) return null;
+    const [hour = 0, minute = 0] = String(value).split(':').map(Number);
+    return hour * 60 + minute;
+  };
+  const latestMinutes = toMinutes(latestTime) ?? -1;
+  const originalMinutes = toMinutes(originalTime) ?? -1;
+  if (latestMinutes < 0 && originalMinutes < 0) return false;
+  const decidingSlot = latestMinutes >= originalMinutes ? latestSlot : originalSlot;
+  return decidingSlot?.is_closed === 1;
+}
+
+export function confirmLateTickets(dayId: number) {
+  const candidates = db.prepare(`
+    SELECT *
+    FROM tickets
+    WHERE day_id = ? AND status = 'issued' AND assigned_slot_id IS NULL
+      AND is_late = 0 AND expected_slot_time IS NOT NULL
+  `).all(dayId) as any[];
+  const markLate = db.prepare('UPDATE tickets SET is_late = 1 WHERE id = ?');
+  for (const ticket of candidates) {
+    if (isLateTicket({ ...ticket, is_late: 0 })) {
+      markLate.run(ticket.id);
+    }
+  }
+}
+
 /**
  * 発券可能・待ち時間判定ロジック
  */
 export function getIssueWaitStatus(dayId: number, simulatedTimeStr?: string | null): IssueWaitStatus {
   const maxWaitMinutes = getMaxWaitMinutes();
+  recomputeLatestTicketTimes(dayId);
 
   if (getIssuingPaused()) {
     return {
@@ -67,7 +169,7 @@ export function getIssueWaitStatus(dayId: number, simulatedTimeStr?: string | nu
       s.is_buffer
     FROM seat_reservations r
     JOIN slots s ON r.slot_id = s.id
-    WHERE s.day_id = ? AND s.is_closed = 0 AND s.is_buffer = 0 AND s.is_maintenance = 0 AND (r.is_assigned = 0 OR r.status = 'empty')
+    WHERE s.day_id = ? AND s.is_closed = 0 AND s.is_buffer = 0 AND s.is_maintenance = 0 AND r.is_maintenance = 0 AND (r.is_assigned = 0 OR r.status = 'empty')
     ORDER BY s.order_idx ASC, r.seat_no ASC
   `).all(dayId) as any[];
 
@@ -156,6 +258,7 @@ export function getIssueWaitStatus(dayId: number, simulatedTimeStr?: string | nu
  * 調整枠の空き状況と遅延者受け入れ可能数を算出するヘルパー
  */
 export function getBufferSummary(dayId: number, nowMins?: number): BufferSummary {
+  recomputeLatestTicketTimes(dayId);
   if (nowMins === undefined) {
     const now = new Date();
     nowMins = now.getHours() * 60 + now.getMinutes();
@@ -180,7 +283,7 @@ export function getBufferSummary(dayId: number, nowMins?: number): BufferSummary
 
     if (!slot.is_closed) {
       remainingBufferSlots++;
-      const emptyCount = seats.filter((s: any) => !s.is_assigned && s.status === 'empty').length;
+      const emptyCount = seats.filter((s: any) => !s.is_assigned && s.status === 'empty' && !s.is_maintenance).length;
       remainingBufferSeats += emptyCount;
     }
   }
@@ -200,9 +303,10 @@ export function getBufferSummary(dayId: number, nowMins?: number): BufferSummary
     if (t.status === 'assigned') continue;
 
     let isDelayed = false;
-    if (t.expected_slot_is_closed === 1) {
+    const maintenanceCaused = isMaintenanceCausedDelay(t, nowMins);
+    if (!maintenanceCaused && t.expected_slot_is_closed === 1) {
       isDelayed = true;
-    } else if (t.expected_slot_time) {
+    } else if (!maintenanceCaused && t.expected_slot_time) {
       const [eH, eM] = t.expected_slot_time.split(':').map(Number);
       const expMins = eH * 60 + eM;
       if (nowMins > expMins) {

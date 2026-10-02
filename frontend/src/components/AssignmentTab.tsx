@@ -331,15 +331,15 @@ export const AssignmentTab: React.FC<AssignmentTabProps> = ({
 
               if (isDelayed) {
                 borderColor = "var(--warning)";
-                labelText = "遅延（到着順）";
+                labelText = slot.is_buffer ? "調整枠（遅刻者）" : "遅延（到着順）";
                 labelColor = "#fbbf24";
               } else if (isAdvanced) {
                 borderColor = slot.is_buffer ? "var(--buffer-color)" : "var(--info)";
-                labelText = slot.is_buffer ? "調整枠（早着前倒し）" : "前倒し";
+                labelText = "前倒し";
                 labelColor = slot.is_buffer ? "#c084fc" : "#22d3ee";
               } else if (isBuffer) {
                 borderColor = "var(--buffer-color)";
-                labelText = "調整枠（到着順）";
+                labelText = "調整枠";
                 labelColor = "#c084fc";
               }
 
@@ -354,6 +354,8 @@ export const AssignmentTab: React.FC<AssignmentTabProps> = ({
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <span className="seat-no-badge">{seat.seat_no}席</span>
+                    {planned.priorityLevel === 2 && <span className="seat-status-label" style={{ color: "#f87171" }}>即時</span>}
+                    {planned.priorityLevel === 1 && <span className="seat-status-label" style={{ color: "#fbbf24" }}>優先</span>}
                     <span
                       className="seat-status-label"
                       style={{ color: labelColor, background: "rgba(255, 255, 255, 0.05)" }}
@@ -372,15 +374,22 @@ export const AssignmentTab: React.FC<AssignmentTabProps> = ({
                   >
                     {planned.displayTicketCode ||
                       (planned.ticketNumber
-                        ? `No. ${planned.ticketNumber}`
+                        ? (planned.priorityLevel === 2 ? `I${String(planned.ticketNumber).padStart(3, "0")}` : planned.priorityLevel === 1 ? `P${String(planned.ticketNumber).padStart(3, "0")}` : `No. ${String(planned.ticketNumber).padStart(3, "0")}`)
                         : planned.ticketCode)}
                   </div>
 
-                  {(isDelayed || isAdvanced) && planned.expectedSlotTime && (
+                  {planned.originalExpectedSlotTime && (
                     <div className="tabular" style={{ fontSize: "0.68rem", color: "var(--text-muted)" }}>
-                      本来: {planned.expectedSlotTime}
+                      本来: {planned.originalExpectedSlotTime}
                     </div>
                   )}
+                  {planned.originalExpectedSlotTime &&
+                    planned.expectedSlotTime &&
+                    planned.originalExpectedSlotTime !== planned.expectedSlotTime && (
+                      <div className="tabular" style={{ fontSize: "0.68rem", color: "#fbbf24" }}>
+                        本来 {planned.originalExpectedSlotTime} → 最新 {planned.expectedSlotTime}
+                      </div>
+                    )}
 
                   <div style={{ fontSize: "0.68rem", color: "var(--text-muted)" }}>
                     未確定
@@ -390,7 +399,7 @@ export const AssignmentTab: React.FC<AssignmentTabProps> = ({
             }
 
             // 3. 空席（メンテナンス中 または 通常空席）
-            if (slot.is_maintenance) {
+            if (seat.is_maintenance) {
               return (
                 <div
                   key={seat.id}

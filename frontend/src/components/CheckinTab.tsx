@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { TicketItem, BufferSummary } from "../types";
 import { QrCodeIcon, RefreshCwIcon, UserXIcon } from "./Icons";
+import { getTicketDisplayCode } from "../utils/ticketCode";
 
 interface CheckinTabProps {
   checkinTickets: TicketItem[];
@@ -38,8 +39,9 @@ export const CheckinTab: React.FC<CheckinTabProps> = ({
     if (!searchLower) return true;
     const numStr = String(t.ticket_number);
     const codeStr = `no. ${t.ticket_number}`.toLowerCase();
+    const priorityCode = getTicketDisplayCode(t.ticket_number, t.priority_level).toLowerCase();
     const game = (t.game_name || "").toLowerCase();
-    return numStr.includes(searchLower) || codeStr.includes(searchLower) || game.includes(searchLower);
+    return numStr.includes(searchLower) || codeStr.includes(searchLower) || priorityCode.includes(searchLower) || game.includes(searchLower);
   });
 
   // 遅延判定ヘルパー関数
@@ -67,6 +69,15 @@ export const CheckinTab: React.FC<CheckinTabProps> = ({
 
   // チケットID -> 遅刻受付順位（1-indexed）のマップ
   const delayedOrderMap = new Map<number, number>();
+
+  const getScheduleDelta = (item: TicketItem) => {
+    if (!item.original_expected_slot_time || !item.expected_slot_time) return 0;
+    const toMinutes = (value: string) => {
+      const [hour = 0, minute = 0] = value.split(":").map(Number);
+      return hour * 60 + minute;
+    };
+    return toMinutes(item.expected_slot_time) - toMinutes(item.original_expected_slot_time);
+  };
   waitingDelayedTickets.forEach((t, idx) => {
     delayedOrderMap.set(t.id, idx + 1);
   });
@@ -361,7 +372,7 @@ export const CheckinTab: React.FC<CheckinTabProps> = ({
                         {/* 整理番号 ＆ 丸い小さなステータスタグ */}
                         <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                           <span className="tabular font-mono" style={{ fontSize: "1.15rem", fontWeight: "700", color: "#38bdf8" }}>
-                            No. {item.ticket_number}
+                            {getTicketDisplayCode(item.ticket_number, item.priority_level)}
                           </span>
 
                           {/* ★ 丸い小さなタグ（遅延/定刻） */}
@@ -430,11 +441,18 @@ export const CheckinTab: React.FC<CheckinTabProps> = ({
                         </div>
 
                         <div style={{ fontSize: "0.85rem", color: "var(--text-main)", fontWeight: "600", marginTop: "2px" }}>
-                          {item.game_name || "未指定"}
+                            {item.priority_level === 2 && <span style={{ color: "#f87171", marginRight: "6px" }}>即時</span>}
+                            {item.priority_level === 1 && <span style={{ color: "#fbbf24", marginRight: "6px" }}>優先</span>}
+                            {item.game_name || "未指定"}
                         </div>
                         {item.expected_slot_time && (
                           <div className="tabular" style={{ fontSize: "0.75rem", color: isDelayed ? "#f87171" : "var(--text-secondary)", marginTop: "2px" }}>
                             予定枠: {item.expected_slot_time} {item.expected_lane ? `(${item.expected_lane}組)` : ""}
+                            {getScheduleDelta(item) !== 0 && (
+                              <span style={{ marginLeft: "6px", color: getScheduleDelta(item) > 0 ? "#fbbf24" : "#22d3ee" }}>
+                                (本来 {item.original_expected_slot_time} / {getScheduleDelta(item) > 0 ? "+" : ""}{getScheduleDelta(item)}分)
+                              </span>
+                            )}
                           </div>
                         )}
                       </div>
@@ -550,7 +568,7 @@ export const CheckinTab: React.FC<CheckinTabProps> = ({
                         {/* 整理番号 ＆ 丸い小さなステータスタグ */}
                         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                           <span className="tabular font-mono" style={{ fontSize: "1.1rem", fontWeight: "700", color: isAssigned ? "var(--text-secondary)" : "#f8fafc" }}>
-                            No. {item.ticket_number}
+                            {getTicketDisplayCode(item.ticket_number, item.priority_level)}
                           </span>
 
                           {/* ★ 丸い小さなタグ（遅延/定刻/案内済） */}
@@ -642,11 +660,16 @@ export const CheckinTab: React.FC<CheckinTabProps> = ({
                         </div>
 
                         <div style={{ fontSize: "0.82rem", color: "var(--text-secondary)", marginTop: "2px" }}>
+                          {item.priority_level === 2 && <span style={{ color: "#f87171", marginRight: "6px" }}>即時</span>}
+                          {item.priority_level === 1 && <span style={{ color: "#fbbf24", marginRight: "6px" }}>優先</span>}
                           {item.game_name || "未指定"}
                         </div>
                         <div className="tabular" style={{ fontSize: "0.72rem", color: isDelayed ? "#fbbf24" : "var(--text-muted)", marginTop: "2px" }}>
                           {arrivedTimeStr ? `${arrivedTimeStr} 到着` : "到着済"}
                           {item.expected_slot_time ? ` (予定: ${item.expected_slot_time})` : ""}
+                          {getScheduleDelta(item) !== 0 && item.original_expected_slot_time
+                            ? ` (本来: ${item.original_expected_slot_time}, ${getScheduleDelta(item) > 0 ? "+" : ""}${getScheduleDelta(item)}分)`
+                            : ""}
                         </div>
                       </div>
 
